@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 
-type Screen = "welcome" | "connect" | "home" | "inspire" | "results" | "plan" | "schedule" | "calendar" | "memory";
+type Screen = "welcome" | "connect" | "home" | "inspire" | "loading" | "results" | "plan" | "schedule" | "calendar" | "memory" | "task";
 type Tab = "home" | "inspire" | "calendar" | "settings";
+type Panel = "" | "edit" | "cancel" | "memoryEdit";
 
 const Arrow = () => <span aria-hidden="true">→</span>;
 const Back = ({ onClick }: { onClick: () => void }) => <button className="icon-button" onClick={onClick} aria-label="返回">‹</button>;
@@ -23,14 +24,29 @@ export default function Home() {
   const [selectedPlan, setSelectedPlan] = useState(0);
   const [adopted, setAdopted] = useState(false);
   const [completed, setCompleted] = useState(false);
+  const [myConfirmed, setMyConfirmed] = useState(false);
+  const [taConfirmed, setTaConfirmed] = useState(false);
+  const [cancelled, setCancelled] = useState(false);
+  const [panel, setPanel] = useState<Panel>("");
+  const [loadingFailed, setLoadingFailed] = useState(false);
+  const [taskAccepted, setTaskAccepted] = useState(false);
+  const [memoryNote, setMemoryNote] = useState("原来平凡的一晚，也会在以后想起来。");
+  const [memoryPhoto, setMemoryPhoto] = useState(false);
   const [choices, setChoices] = useState({ mood: "想放松", time: "今晚", budget: "¥100–300", space: "都可以" });
   const [toast, setToast] = useState("");
   const currentPlan = plans[selectedPlan];
 
-  const step = useMemo(() => ({ welcome: 0, connect: 1, home: 2, inspire: 3, results: 4, plan: 5, schedule: 6, calendar: 7, memory: 8 }[screen]), [screen]);
+  const step = useMemo(() => ({ welcome: 0, connect: 1, home: 2, inspire: 3, loading: 3, results: 4, plan: 5, schedule: 6, calendar: 7, memory: 8, task: 2 }[screen]), [screen]);
 
   function go(next: Screen) { setScreen(next); window.scrollTo({ top: 0, behavior: "smooth" }); }
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 1800); }
+  function generate(shouldFail = false) {
+    setLoadingFailed(shouldFail); go("loading");
+    if (!shouldFail) window.setTimeout(() => go("results"), 1500);
+  }
+  function resetJourney() {
+    setAdopted(false); setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); setCancelled(false); go("home");
+  }
 
   function nav(tab: Tab) {
     if (tab === "home") go("home");
@@ -51,13 +67,13 @@ export default function Home() {
     <main className="prototype-shell">
       <aside className="prototype-notes">
         <div className="brand-mark">日</div>
-        <p className="kicker">恋爱日记 · V1 原型</p>
+        <p className="kicker">恋爱日记 · V1.1 原型</p>
         <h1>把一起生活的<br/>小事，好好留下。</h1>
         <p className="intro">从一个轻松的约会灵感开始，经过双方确认，成为共同安排，最后自然沉淀为回忆。</p>
         <div className="journey">
           {["相遇", "我们", "灵感", "计划", "安排", "日历", "回忆"].map((label, i) => <div key={label} className={step >= i + 1 ? "done" : ""}><i>{step > i + 1 ? "✓" : i + 1}</i><span>{label}</span></div>)}
         </div>
-        <p className="hint">这是一条完整可点击主流程。手机框内的按钮、卡片和底部导航均可操作。</p>
+        <p className="hint">V1.1 新增 AI 异常、安排编辑与取消、双方确认、回忆补充和情侣任务支线。手机框内均可操作。</p>
       </aside>
 
       <section className="phone-stage">
@@ -96,6 +112,8 @@ export default function Home() {
                   {adopted ? <button className="event-card" onClick={() => go("schedule")}><span className="date-block"><b>08</b><small>周六</small></span><span><b>18:30 · 杭州</b><small>已加入共同安排</small></span><i>›</i></button> : <button className="inspiration-card" onClick={() => go("inspire")}><div className="spark">✦</div><div><b>获取一份约会灵感</b><small>告诉我们此刻的心情，剩下的交给灵感</small></div><i>›</i></button>}
                 </section>
                 <section className="content-section memory-peek"><div className="section-heading"><div><p className="kicker">最近的回忆</p><h3>{completed ? "晚风里，我们聊了很久" : "平凡日子里的闪光"}</h3></div><span>全部</span></div><button className="photo-card" onClick={() => completed ? go("memory") : notify("完成一次安排后，这里会出现回忆")}><div className="photo-art"><span>09.18</span></div><p>{completed ? "河畔小酒馆 · 2 张照片" : "一起做饭的那个周末"}</p></button></section>
+                <section className="content-section task-peek"><div className="section-heading"><div><p className="kicker">本周情侣任务</p><h3>一起交换一首最近常听的歌</h3></div><span>新任务</span></div><button className="task-card" onClick={() => go("task")}><span>♫</span><div><b>{taskAccepted ? "任务进行中" : "给平常加一点新鲜"}</b><small>{taskAccepted ? "去规划一个适合分享音乐的晚上" : "接受后，可以从任务直接进入灵感规划"}</small></div><i>›</i></button></section>
+                <button className="demo-reset" onClick={resetJourney}>↺ 重置原型状态</button>
                 {bottomNav("home")}
               </div>
             )}
@@ -108,9 +126,13 @@ export default function Home() {
                 <Choice title="时间" options={["今晚", "周末", "下周"]} value={choices.time} setValue={(time) => setChoices({...choices, time})}/>
                 <Choice title="预算" options={["¥100以内", "¥100–300", "¥300+"]} value={choices.budget} setValue={(budget) => setChoices({...choices, budget})}/>
                 <Choice title="活动空间" options={["都可以", "室内", "户外"]} value={choices.space} setValue={(space) => setChoices({...choices, space})}/>
-                <div className="sticky-cta"><button className="primary-button" onClick={() => go("results")}>获取 3 个灵感 <span>✦</span></button></div>
+                <div className="sticky-cta"><button className="primary-button" onClick={() => generate(false)}>获取 3 个灵感 <span>✦</span></button><button className="failure-link" onClick={() => generate(true)}>预览生成失败状态</button></div>
                 {bottomNav("inspire")}
               </div>
+            )}
+
+            {screen === "loading" && (
+              <div className="page loading-page"><header><Back onClick={() => go("inspire")}/><span>正在寻找灵感</span><i/></header>{loadingFailed ? <div className="error-state"><div className="state-symbol">↻</div><p className="kicker">暂时走神了</p><h2>灵感没有生成成功</h2><p>网络有一点拥挤，你刚才选择的条件都还在，不需要重新填写。</p><button className="primary-button" onClick={() => generate(false)}>再试一次 <Arrow/></button><button className="ghost-button" onClick={() => go("inspire")}>返回修改条件</button></div> : <div className="ai-loading"><div className="loading-orbit"><span>✦</span></div><p className="kicker">读懂你们此刻的心情</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配你们的状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>通常只需要几秒钟</p></div>}</div>
             )}
 
             {screen === "results" && (
@@ -135,12 +157,12 @@ export default function Home() {
 
             {screen === "schedule" && (
               <div className="page schedule-page">
-                <header><Back onClick={() => go("home")}/><span>安排详情</span><button className="text-button" onClick={() => notify("编辑功能已模拟")}>编辑</button></header>
-                <div className="confirmation"><span>✓</span><p>已加入共同安排</p></div>
+                <header><Back onClick={() => go("home")}/><span>安排详情</span><button className="text-button" onClick={() => setPanel("edit")}>编辑</button></header>
+                <div className={`confirmation ${cancelled ? "is-cancelled" : ""}`}><span>{cancelled ? "×" : "✓"}</span><p>{cancelled ? "安排已取消" : completed ? "双方已确认完成" : "已加入共同安排"}</p></div>
                 <div className="schedule-title"><p className="kicker">8月8日 · 周六</p><h2>{currentPlan.title}</h2><p>18:30–22:00 · 杭州</p></div>
                 <section className="schedule-card"><div><span className="label">时间</span><b>今天 18:30</b></div><div><span className="label">集合</span><b>近江地铁站 B 口</b></div><div><span className="label">预算</span><b>约 ¥260 / 两人</b></div><button onClick={() => go("plan")}>查看完整路线 <span>›</span></button></section>
-                <div className="people-row"><div className="avatar a">林</div><div><b>你发起了这个安排</b><p>TA 已收到共同日历提醒</p></div><div className="avatar b">予</div></div>
-                {!completed ? <div className="schedule-actions"><button className="primary-button" onClick={() => {setCompleted(true); go("memory");}}>完成了，留下回忆 <Arrow /></button><button className="ghost-button" onClick={() => notify("安排仍为进行中")}>稍后再说</button></div> : <div className="schedule-actions"><button className="primary-button" onClick={() => go("memory")}>查看这次回忆 <Arrow /></button></div>}
+                <div className="people-row"><div className="avatar a">林</div><div><b>{cancelled ? "这次安排已取消" : myConfirmed ? "你已确认完成" : "你发起了这个安排"}</b><p>{taConfirmed ? "TA 也已确认完成" : myConfirmed ? "正在等待 TA 确认" : "TA 已收到共同日历提醒"}</p></div><div className="avatar b">予</div></div>
+                {cancelled ? <div className="schedule-actions"><button className="primary-button" onClick={() => {setCancelled(false); notify("安排已恢复");}}>重新安排 <Arrow /></button></div> : completed ? <div className="schedule-actions"><button className="primary-button" onClick={() => go("memory")}>查看这次回忆 <Arrow /></button></div> : !myConfirmed ? <div className="schedule-actions"><button className="primary-button" onClick={() => setMyConfirmed(true)}>我完成了 <Arrow /></button><button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>取消这个安排</button></div> : <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待 TA 确认</b><p>双方确认后，会自动生成基础回忆</p></div></div><button className="primary-button" onClick={() => {setTaConfirmed(true); setCompleted(true); notify("双方已确认，回忆已生成");}}>模拟 TA 确认 <Arrow /></button></div>}
                 {bottomNav("calendar")}
               </div>
             )}
@@ -158,14 +180,17 @@ export default function Home() {
 
             {screen === "memory" && (
               <div className="page memory-page">
-                <div className="memory-cover"><header><Back onClick={() => go("home")}/><span>我们的回忆</span><button className="icon-button" onClick={() => notify("回忆已准备分享")}>↗</button></header><div className="moon">☽</div><div className="city-lights">•• · • ·• ••</div><div className="cover-copy"><p>2026.08.08 · 杭州</p><h2>晚风里，<br/>我们聊了很久。</h2></div></div>
-                <section className="memory-story"><p className="dropcap">那</p><p>天没有特别宏大的计划。我们沿着江边慢慢走，风刚好，天色也刚好。后来在靠窗的位置坐下，分享了一份甜点，也分享了最近各自藏着的小心事。</p><blockquote>“原来平凡的一晚，也会在以后想起来。”</blockquote><div className="memory-stats"><span><b>3.2 km</b><small>一起走过</small></span><span><b>3.5 h</b><small>共同时间</small></span><span><b>♥</b><small>值得记住</small></span></div></section>
-                <section className="memory-footer"><div className="couple-avatars"><div className="avatar a">林</div><div className="avatar b">予</div></div><p>已收进「我们的回忆」</p><button className="primary-button" onClick={() => go("home")}>回到我们 <Arrow /></button></section>
+                <div className={`memory-cover ${memoryPhoto ? "with-photo" : ""}`}><header><Back onClick={() => go("home")}/><span>我们的回忆</span><button className="icon-button" onClick={() => notify("回忆已准备分享")}>↗</button></header><div className="moon">☽</div><div className="city-lights">•• · • ·• ••</div><div className="cover-copy"><p>2026.08.08 · 杭州</p><h2>晚风里，<br/>我们聊了很久。</h2></div></div>
+                <section className="memory-story"><p className="dropcap">那</p><p>天没有特别宏大的计划。我们沿着江边慢慢走，风刚好，天色也刚好。后来在靠窗的位置坐下，分享了一份甜点，也分享了最近各自藏着的小心事。</p><blockquote>“{memoryNote}”</blockquote><button className="memory-edit-link" onClick={() => setPanel("memoryEdit")}>＋ 补充照片或一句话</button><div className="memory-stats"><span><b>3.2 km</b><small>一起走过</small></span><span><b>3.5 h</b><small>共同时间</small></span><span><b>♥</b><small>值得记住</small></span></div></section>
+                <section className="memory-footer"><div className="couple-avatars"><div className="avatar a">林</div><div className="avatar b">予</div></div><p>已收进「我们的回忆」{memoryPhoto ? " · 1 张照片" : ""}</p><button className="primary-button" onClick={() => go("home")}>回到我们 <Arrow /></button></section>
               </div>
             )}
+
+            {screen === "task" && <div className="page task-page"><header><Back onClick={() => go("home")}/><span>情侣任务</span><i/></header><div className="task-hero"><span>♫</span><p className="kicker">本周的小任务</p><h2>交换一首<br/>最近常听的歌</h2><p>不是为了猜对彼此，而是借一首歌，听见最近没有说出口的心情。</p></div><div className="task-rule"><span>01</span><p><b>各自选一首</b><br/>先不要告诉对方原因</p><span>02</span><p><b>一起完整听完</b><br/>再分享为什么选择它</p></div>{!taskAccepted ? <div className="task-actions"><button className="primary-button" onClick={() => setTaskAccepted(true)}>接受这个任务 <Arrow/></button><button className="ghost-button" onClick={() => notify("已为你保留，下次再看")}>换一个任务</button></div> : <div className="task-actions"><div className="accepted-badge">✓ 已加入你们的任务</div><button className="primary-button" onClick={() => {setChoices({...choices, mood:"想放松"}); go("inspire");}}>去规划一个晚上 <Arrow/></button></div>}</div>}
           </div>
         </div>
       </section>
+      {panel && <div className="modal-backdrop" onClick={() => setPanel("")}><section className="bottom-sheet" onClick={e => e.stopPropagation()}><div className="sheet-handle"/>{panel === "edit" && <><p className="kicker">编辑正式安排</p><h2>调整时间与集合地点</h2><label>日期与时间<input defaultValue="8月8日 18:30"/></label><label>集合地点<input defaultValue="近江地铁站 B 口"/></label><button className="primary-button" onClick={() => {setPanel("");notify("安排已更新，TA 会收到提醒");}}>保存修改 <Arrow/></button></>}{panel === "cancel" && <><div className="danger-symbol">!</div><h2>确定取消这个安排？</h2><p className="sheet-copy">取消后会保留记录，你们仍然可以随时重新安排。</p><button className="danger-button" onClick={() => {setCancelled(true);setPanel("");}}>确认取消</button><button className="ghost-button" onClick={() => setPanel("")}>保留安排</button></>}{panel === "memoryEdit" && <><p className="kicker">让回忆更像你们</p><h2>补充一点真实细节</h2><button className={`photo-upload ${memoryPhoto ? "added" : ""}`} onClick={() => setMemoryPhoto(true)}><span>{memoryPhoto ? "✓" : "+"}</span>{memoryPhoto ? "已添加一张河畔照片" : "添加照片"}</button><label>想留住的一句话<textarea value={memoryNote} onChange={e => setMemoryNote(e.target.value)}/></label><button className="primary-button" onClick={() => {setPanel("");notify("回忆已更新");}}>保存到回忆 <Arrow/></button></>}</section></div>}
       {toast && <div className="toast">{toast}</div>}
     </main>
   );
