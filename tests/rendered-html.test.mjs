@@ -74,6 +74,8 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /AI 密钥尚未配置，当前显示演示方案/);
   assert.match(page, /\/signin-with-chatgpt\?return_to=/);
   assert.match(page, /fetch\("\/api\/relationship\/join"/);
+  assert.match(page, /input\.type = "date"/);
+  assert.match(page, /input\.max = dateInputValue\(0\)/);
   assert.match(accountApi, /getChatGPTUser/);
   assert.match(inviteApi, /expiresAt/);
   assert.match(joinApi, /env\.DB\.batch/);

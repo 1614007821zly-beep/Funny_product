@@ -14,6 +14,7 @@ const Arrow = () => <span aria-hidden="true">→</span>;
 const Back = ({ onClick }: { onClick: () => void }) => <button className="icon-button" onClick={onClick} aria-label="返回">‹</button>;
 const dateInputValue = (offsetDays: number) => { const date = new Date(); date.setDate(date.getDate() + offsetDays); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; };
 const localDate = (value: string) => new Date(`${value}T12:00:00`);
+const dateFieldValue = (value: string | null | undefined) => /^\d{4}-\d{2}-\d{2}$/.test(value ?? "") ? value! : "";
 
 function Pill({ children, active, onClick }: { children: React.ReactNode; active?: boolean; onClick?: () => void }) {
   return <button type="button" className={`pill ${active ? "active" : ""}`} aria-pressed={Boolean(active)} onClick={onClick}>{children}</button>;
@@ -44,7 +45,7 @@ export default function Home() {
   const [inviteCodeValue, setInviteCodeValue] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [relationshipError, setRelationshipError] = useState("");
-  const [profile, setProfile] = useState({ name: "林予", birthday: "4月18日", city: "杭州" });
+  const [profile, setProfile] = useState({ name: "林予", birthday: "", city: "杭州" });
   const [partnerProfile, setPartnerProfile] = useState({ name: "周宁", birthday: "11月6日" });
   const [isLocating, setIsLocating] = useState(false);
   const [scheduleDraft, setScheduleDraft] = useState(() => ({ title: "", date: dateInputValue(7), time: "18:30", city: "杭州" }));
@@ -132,7 +133,7 @@ export default function Home() {
       if (response.status === 401) { setAccount({ authenticated: false }); return null; }
       if (!response.ok) throw new Error("账号状态读取失败");
       setAccount(data);
-      if (data.user) setProfile({ name: data.user.nickname, birthday: data.user.birthday ?? "", city: data.user.city });
+      if (data.user) setProfile({ name: data.user.nickname, birthday: dateFieldValue(data.user.birthday), city: data.user.city });
       if (data.invite?.code) setInviteCodeValue(data.invite.code);
       if (data.relationship?.partner_id) {
         setPartnerProfile({ name: data.relationship.partner_name ?? "TA", birthday: data.relationship.partner_birthday ?? "" });
@@ -235,6 +236,15 @@ export default function Home() {
     return () => window.clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, account?.authenticated, account?.relationship?.partner_id]);
+
+  useEffect(() => {
+    document.querySelectorAll<HTMLInputElement>('input[name="my-birthday"]').forEach(input => {
+      input.type = "date";
+      input.max = dateInputValue(0);
+      input.removeAttribute("inputmode");
+      input.setAttribute("aria-label", "选择我的生日");
+    });
+  }, [screen, panel]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("love-diary-v112") ?? window.localStorage.getItem("love-diary-v17") ?? window.localStorage.getItem("love-diary-v16") ?? window.localStorage.getItem("love-diary-v15") ?? window.localStorage.getItem("love-diary-v14");
