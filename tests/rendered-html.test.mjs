@@ -30,7 +30,7 @@ test("server-renders the Love Diary V1.12 experience", async () => {
 });
 
 test("keeps accessibility and interaction safeguards in source", async () => {
-  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, schema, releaseMigration] = await Promise.all([
+  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, schedulesApi, schema, releaseMigration, scheduleMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -39,8 +39,10 @@ test("keeps accessibility and interaction safeguards in source", async () => {
     readFile(new URL("../app/api/relationship/invite/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/relationship/join/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/relationship/leave/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/schedules/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0002_release_ended_relationships.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0003_rainy_saracen.sql", import.meta.url), "utf8"),
   ]);
 
   assert.match(layout, /className="skip-link"/);
@@ -96,6 +98,12 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(leaveApi, /UPDATE relationship_invites SET status='cancelled'/);
   assert.match(page, /fetch\("\/api\/relationship\/leave"/);
   assert.match(releaseMigration, /WHERE `status` = 'ended'/);
+  assert.match(page, /fetch\("\/api\/schedules"/);
+  assert.match(page, /接受这个安排/);
+  assert.match(schedulesApi, /pending_partner/);
+  assert.match(schedulesApi, /created_by_user_id === identity\.userId/);
+  assert.match(schema, /sharedSchedules/);
+  assert.match(scheduleMigration, /CREATE TABLE `shared_schedules`/);
   assert.match(schema, /relationshipMembers/);
   assert.match(schema, /relationshipInvites/);
   assert.doesNotMatch(page, /AIHUBMIX_API_KEY|AMAP_WEB_SERVICE_KEY/);

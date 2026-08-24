@@ -9,6 +9,7 @@ type Place = { id: string; name: string; address: string; location: string; type
 type TimelineNode = { time: string; title: string; description: string };
 type Plan = { eyebrow: string; title: string; meta: string; desc: string; tone: string; duration?: string; timeline?: TimelineNode[]; places?: Place[] };
 type AccountSnapshot = { authenticated: boolean; user?: { id: string; email: string; nickname: string; birthday: string | null; city: string }; relationship?: { id: string; status: string; partner_id: string | null; partner_name: string | null; partner_birthday: string | null } | null; invite?: { code: string; partner_note: string | null; expires_at: string; status: string } | null };
+type SharedSchedule = { id: string; relationship_id: string; created_by_user_id: string; accepted_by_user_id: string | null; title: string; event_date: string; event_time: string; city: string; status: "pending_partner" | "confirmed" | "cancelled"; created_at: string; updated_at: string };
 
 const Arrow = () => <span aria-hidden="true">→</span>;
 const Back = ({ onClick }: { onClick: () => void }) => <button className="icon-button" onClick={onClick} aria-label="返回">‹</button>;
@@ -45,6 +46,8 @@ export default function Home() {
   const [profileError, setProfileError] = useState("");
   const [account, setAccount] = useState<AccountSnapshot | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
+  const [sharedSchedule, setSharedSchedule] = useState<SharedSchedule | null>(null);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
   const [onboardingIntent, setOnboardingIntent] = useState<"invite" | "join">("invite");
   const [inviteCodeValue, setInviteCodeValue] = useState("");
   const [joinCode, setJoinCode] = useState("");
@@ -136,7 +139,7 @@ export default function Home() {
     try {
       const response = await fetch("/api/account", { cache: "no-store" });
       const data = await response.json() as AccountSnapshot;
-      if (response.status === 401) { setAccount({ authenticated: false }); return null; }
+      if (response.status === 401) { setAccount({ authenticated: false }); setSharedSchedule(null); return null; }
       if (!response.ok) throw new Error("账号状态读取失败");
       setAccount(data);
       if (data.user) setProfile({ name: data.user.nickname, birthday: dateFieldValue(data.user.birthday), city: data.user.city });
@@ -145,7 +148,7 @@ export default function Home() {
         setPartnerProfile({ name: data.relationship.partner_name ?? "TA", birthday: data.relationship.partner_birthday ?? "" });
         setHasStarted(true);
         if (screen === "connect") go("relationshipReady", true);
-      } else setHasStarted(false);
+      } else { setHasStarted(false); setSharedSchedule(null); }
       return data;
     } catch {
       if (!silent) setRelationshipError("暂时无法连接账号服务，请稍后重试。");
@@ -161,6 +164,46 @@ export default function Home() {
       setInviteCodeValue(data.code); notify("真实邀请码已生成，7 天内有效");
     } catch (error) { setRelationshipError(error instanceof Error ? error.message : "邀请码生成失败。"); }
     finally { setAccountBusy(false); }
+  }
+  async function loadSharedSchedule(silent = false) {
+    if (!account?.authenticated && !silent) return;
+    try {
+      const response = await fetch("/api/schedules", { cache: "no-store" });
+      if (response.status === 401) return;
+      const data = await response.json() as { schedule?: SharedSchedule | null; error?: string };
+      if (!response.ok) throw new Error(data.error || "共同安排读取失败。");
+      const schedule = data.schedule ?? null;
+      setSharedSchedule(schedule);
+      if (schedule) {
+        setScheduleDraft({ title: schedule.title, date: schedule.event_date, time: schedule.event_time, city: schedule.city });
+        setSelectedDay(localDate(schedule.event_date).getDate()); setMonthOffset(0);
+        setAdopted(true); setPartnerAccepted(schedule.status === "confirmed"); setCancelled(schedule.status === "cancelled");
+      } else if (account?.authenticated) { setAdopted(false); setPartnerAccepted(false); }
+    } catch { if (!silent) notify("共同安排同步失败，请稍后重试"); }
+  }
+  async function createSharedSchedule() {
+    const title = (scheduleDraft.title || currentPlan.title).trim(); const city = (scheduleDraft.city || profile.city).trim();
+    if (!title || !scheduleDraft.date || !scheduleDraft.time || !city) { setFormError("请完整填写安排名称、日期、时间和城市。"); return; }
+    setScheduleBusy(true); setFormError("");
+    try {
+      const response = await fetch("/api/schedules", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, eventDate: scheduleDraft.date, eventTime: scheduleDraft.time, city }) });
+      const data = await response.json() as { schedule?: SharedSchedule; error?: string };
+      if (!response.ok || !data.schedule) throw new Error(data.error || "安排发送失败。");
+      setSharedSchedule(data.schedule); setScheduleDraft({ title, date: scheduleDraft.date, time: scheduleDraft.time, city });
+      setSelectedDay(localDate(scheduleDraft.date).getDate()); setMonthOffset(0); setAdopted(true); setPartnerAccepted(false); setTaskLinked(taskAccepted); go("schedule");
+    } catch (error) { setFormError(error instanceof Error ? error.message : "安排发送失败。"); }
+    finally { setScheduleBusy(false); }
+  }
+  async function acceptSharedSchedule() {
+    if (!sharedSchedule) return;
+    setScheduleBusy(true);
+    try {
+      const response = await fetch("/api/schedules", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: sharedSchedule.id, action: "accept" }) });
+      const data = await response.json() as { schedule?: SharedSchedule; error?: string };
+      if (!response.ok || !data.schedule) throw new Error(data.error || "接受安排失败。");
+      setSharedSchedule(data.schedule); setPartnerAccepted(true); notify("安排已接受，双方共同日历已同步");
+    } catch (error) { notify(error instanceof Error ? error.message : "接受安排失败。"); }
+    finally { setScheduleBusy(false); }
   }
   async function saveProfileAndContinue() {
     if (!profile.name.trim() || (onboardingIntent === "invite" && !partnerProfile.name.trim())) { setProfileError("请填写昵称和邀请称呼后继续。"); window.requestAnimationFrame(()=>profileErrorRef.current?.focus()); return; }
@@ -267,7 +310,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const refreshAccount = () => { if (document.visibilityState === "visible") void loadAccount(true); };
+    const refreshAccount = () => { if (document.visibilityState === "visible") { void loadAccount(true); void loadSharedSchedule(true); } };
     window.addEventListener("focus", refreshAccount);
     document.addEventListener("visibilitychange", refreshAccount);
     return () => {
@@ -276,6 +319,13 @@ export default function Home() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!account?.authenticated || !account.relationship?.partner_id) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadSharedSchedule(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?.authenticated, account?.relationship?.id, account?.relationship?.partner_id]);
 
   useEffect(() => {
     if (screen !== "connect" || !account?.authenticated || account.relationship?.partner_id) return;
@@ -535,17 +585,17 @@ export default function Home() {
 
             {screen === "location" && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span>{currentPlace ? <a className="icon-button" href={amapMapUrl} target="_blank" rel="noreferrer" aria-label="在高德地图中打开地点">↗</a> : <button className="icon-button" onClick={() => notify("本方案尚未匹配到真实地点")} aria-label="地点尚未匹配">↗</button>}</header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>{currentPlace ? "高德地图地点数据" : "AI 地点建议 · 未核验"}</span></div><section className="place-title"><p className="kicker">{currentPlace ? "真实地点已匹配 · 营业信息请出发前确认" : "尚未匹配到真实地点"}</p><h2>{currentPlace?.name || currentPlan.title}</h2><p>{currentPlace?.address || `请在${profile.city}重新生成或更换搜索条件`}</p></section><section className="info-group"><InfoRow label="计划时段" value="以最终安排为准"/><InfoRow label="地点类型" value={currentPlace?.type || "AI 建议"}/><InfoRow label="坐标" value={currentPlace?.location || "尚未获取"}/><InfoRow label="营业时间" value="高德地点搜索未提供，需另行确认"/><InfoRow label="地点来源" value={currentPlace ? "高德地图 Web 服务" : "AIHubMix 建议"}/></section><PlaceCandidates places={currentPlaceCandidates} selectedId={currentPlace?.id} onSelect={(index)=>{setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?index:value));setPlaceVersion(index);}}/><section className="place-notice"><b>执行提示</b><p>{currentPlace ? "地点名称、地址和坐标来自高德地图；营业状态、排队情况与价格可能变化，请出发前确认。" : "AI 不会编造具体商家。重新生成后，系统会尝试用高德地图匹配真实地点。"}</p></section>{currentPlace ? <a className="primary-button map-link" href={amapMapUrl} target="_blank" rel="noreferrer">在高德地图中查看 <Arrow/></a> : <button className="primary-button" onClick={() => {go("inspire");notify("请调整关键词后重新生成");}}>返回调整条件 <Arrow/></button>}<button className="ghost-button" onClick={() => {setSelectedPlan((selectedPlan+1)%3);go("plan");}}>查看另一个方案</button></div>}
 
-            {screen === "confirm" && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>确认安排</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>发给 TA，<br/>一起决定。</h2><p className="confirm-copy">你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”，不会被当作双方已确定的事实。</p></section><section className="confirm-card"><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>{setScheduleDraft({...scheduleDraft,title:e.target.value});setFormError("");}}/></label><label>日期<input required name="schedule-date" type="date" autoComplete="off" value={scheduleDraft.date} onChange={e=>{setScheduleDraft({...scheduleDraft,date:e.target.value});setFormError("");}}/></label><label>开始时间<input required name="schedule-time" type="time" autoComplete="off" value={scheduleDraft.time} onChange={e=>{setScheduleDraft({...scheduleDraft,time:e.target.value});setFormError("");}}/></label><label>所在城市<input required name="schedule-city" autoComplete="address-level2" value={scheduleDraft.city || profile.city} onChange={e=>{setScheduleDraft({...scheduleDraft,city:e.target.value});setFormError("");}}/></label></section>{formError&&<p className="field-error" role="alert">{formError}</p>}{taskAccepted && <section className="link-context"><span>♫</span><div><b>关联情侣任务</b><p>交换一首最近常听的歌</p></div><em>TA 接受后关联</em></section>}<button className="primary-button" onClick={() => {if(!(scheduleDraft.title||currentPlan.title).trim()||!scheduleDraft.date||!scheduleDraft.time||!(scheduleDraft.city||profile.city).trim()){setFormError("请完整填写安排名称、日期、时间和城市。");return;}setSelectedDay(localDate(scheduleDraft.date).getDate());setMonthOffset(0);setAdopted(true);setPartnerAccepted(false);setTaskLinked(taskAccepted);go("schedule");}}>发给 TA 确认 <Arrow/></button><button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
+            {screen === "confirm" && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>确认安排</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>发给 TA，<br/>一起决定。</h2><p className="confirm-copy">你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”，不会被当作双方已确定的事实。</p></section><section className="confirm-card"><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>{setScheduleDraft({...scheduleDraft,title:e.target.value});setFormError("");}}/></label><label>日期<input required name="schedule-date" type="date" autoComplete="off" value={scheduleDraft.date} onChange={e=>{setScheduleDraft({...scheduleDraft,date:e.target.value});setFormError("");}}/></label><label>开始时间<input required name="schedule-time" type="time" autoComplete="off" value={scheduleDraft.time} onChange={e=>{setScheduleDraft({...scheduleDraft,time:e.target.value});setFormError("");}}/></label><label>所在城市<input required name="schedule-city" autoComplete="address-level2" value={scheduleDraft.city || profile.city} onChange={e=>{setScheduleDraft({...scheduleDraft,city:e.target.value});setFormError("");}}/></label></section>{formError&&<p className="field-error" role="alert">{formError}</p>}{taskAccepted && <section className="link-context"><span>♫</span><div><b>关联情侣任务</b><p>交换一首最近常听的歌</p></div><em>TA 接受后关联</em></section>}<button className="primary-button" disabled={scheduleBusy} onClick={()=>void createSharedSchedule()}>{scheduleBusy?"正在发送…":"发给 TA 确认"} <Arrow/></button><button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
 
             {screen === "schedule" && (
               <div className="page schedule-page">
                 <header><Back onClick={() => back("calendar")}/><span>安排详情</span><button className="text-button" onClick={() => setPanel("edit")}>编辑</button></header>
                 <div className={`confirmation ${cancelled ? "is-cancelled" : ""} ${!partnerAccepted&&!cancelled?"is-pending":""}`}><span>{cancelled ? "×" : !partnerAccepted ? "◷" : "✓"}</span><p>{cancelled ? "安排已取消" : !partnerAccepted ? "等待 TA 接受" : completed ? "双方已确认完成" : "双方已接受 · 正式安排"}</p></div>
-                <div className="schedule-title"><p className="kicker">{eventDateLong}</p><h2>{currentPlan.title}</h2><p>18:30–22:00 · {profile.city}</p></div>
+                <div className="schedule-title"><p className="kicker">{eventDateLong}</p><h2>{scheduleDraft.title || currentPlan.title}</h2><p>{scheduleDraft.time} · {scheduleDraft.city || profile.city}</p></div>
                 <section className="schedule-card"><div><span className="label">时间</span><b>{eventMonthDay} 18:30</b></div><div><span className="label">集合</span><b>近江地铁站 B 口</b></div><div><span className="label">预算</span><b>约 {eventBudget} / 两人</b></div><button onClick={() => go("plan")}>查看完整路线 <span>›</span></button></section>
                 {taskLinked && <button className="linked-task" onClick={() => go("task")}><span>♫</span><div><small>关联情侣任务</small><b>交换一首最近常听的歌</b></div><i aria-hidden="true">›</i></button>}
                 <div className="people-row"><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{cancelled ? "这次安排已取消" : !partnerAccepted ? "你已发出邀请" : myConfirmed ? "你已确认完成" : "双方已经接受"}</b><p>{!partnerAccepted ? "等待 TA 接受、拒绝或提出修改" : taConfirmed ? "TA 也已确认完成" : myConfirmed ? "正在等待 TA 确认完成" : "安排已进入双方共同日历"}</p></div><div className="avatar b">{partnerProfile.name.slice(0,1)}</div></div>
-                {cancelled ? <div className="schedule-actions"><button className="primary-button" onClick={() => {setCancelled(false);setPartnerAccepted(false);notify("已重新发给 TA 确认");}}>重新发起安排 <Arrow /></button></div> : !partnerAccepted ? <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待 TA 接受</b><p>接受后才会成为双方已确认的正式安排</p></div></div><button className="primary-button" onClick={()=>{setPartnerAccepted(true);notify("TA 已接受，安排进入双方日历");}}>模拟 TA 接受 <Arrow/></button><button className="ghost-button" onClick={()=>{setCancelled(true);notify("TA 已拒绝，本次候选已保留");}}>模拟 TA 拒绝</button></div> : completed ? <div className="schedule-actions"><div className="recorded-note"><b>这次经历已记录 ♡</b><p>{taskDone ? "关联任务也已完成；没有生成第二条回忆。" : "基础回忆已经生成，稍后完善也算完整。"}</p></div><button className="primary-button" onClick={() => go("memory")}>完善这次回忆 <Arrow /></button></div> : !myConfirmed ? <div className="schedule-actions"><button className="primary-button" onClick={() => setMyConfirmed(true)}>我完成了 <Arrow /></button><button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>取消这个安排</button></div> : <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待 TA 确认完成</b><p>双方确认后，才会生成不含虚构感受的基础回忆</p></div></div><button className="primary-button" onClick={() => {setTaConfirmed(true); setCompleted(true); setTaskDone(taskLinked); notify("双方已确认，基础回忆已生成");}}>模拟 TA 确认完成 <Arrow /></button></div>}
+                {cancelled ? <div className="schedule-actions"><button className="primary-button" onClick={() => {setCancelled(false);setPartnerAccepted(false);notify("已重新发给 TA 确认");}}>重新发起安排 <Arrow /></button></div> : !partnerAccepted ? <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>{sharedSchedule?.created_by_user_id===account?.user?.id?"等待 TA 接受":"TA 发来一项共同安排"}</b><p>接受后才会成为双方已确认的正式安排</p></div></div>{sharedSchedule?.created_by_user_id!==account?.user?.id&&<button className="primary-button" disabled={scheduleBusy} onClick={()=>void acceptSharedSchedule()}>{scheduleBusy?"正在同步…":"接受这个安排"} <Arrow/></button>}</div> : completed ? <div className="schedule-actions"><div className="recorded-note"><b>这次经历已记录 ♡</b><p>{taskDone ? "关联任务也已完成；没有生成第二条回忆。" : "基础回忆已经生成，稍后完善也算完整。"}</p></div><button className="primary-button" onClick={() => go("memory")}>完善这次回忆 <Arrow /></button></div> : !myConfirmed ? <div className="schedule-actions"><button className="primary-button" onClick={() => setMyConfirmed(true)}>我完成了 <Arrow /></button><button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>取消这个安排</button></div> : <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待 TA 确认完成</b><p>双方确认后，才会生成不含虚构感受的基础回忆</p></div></div><button className="primary-button" onClick={() => {setTaConfirmed(true); setCompleted(true); setTaskDone(taskLinked); notify("双方已确认，基础回忆已生成");}}>模拟 TA 确认完成 <Arrow /></button></div>}
                 {bottomNav("calendar")}
               </div>
             )}

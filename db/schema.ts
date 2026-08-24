@@ -45,3 +45,20 @@ export const relationshipInvites = sqliteTable("relationship_invites", {
   uniqueIndex("idx_relationship_invites_code").on(table.code),
   index("idx_relationship_invites_inviter_status").on(table.inviterUserId, table.status),
 ]);
+
+export const sharedSchedules = sqliteTable("shared_schedules", {
+  id: text("id").primaryKey(),
+  relationshipId: text("relationship_id").notNull().references(() => relationships.id),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id),
+  acceptedByUserId: text("accepted_by_user_id").references(() => users.id),
+  title: text("title").notNull(),
+  eventDate: text("event_date").notNull(),
+  eventTime: text("event_time").notNull(),
+  city: text("city").notNull(),
+  status: text("status").notNull().default("pending_partner"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, table => [
+  index("idx_shared_schedules_relationship_status").on(table.relationshipId, table.status),
+  index("idx_shared_schedules_relationship_date").on(table.relationshipId, table.eventDate),
+]);
