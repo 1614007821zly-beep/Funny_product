@@ -292,7 +292,7 @@ export default function Home() {
                 <header><Back onClick={() => back("welcome")}/><span>建立关系</span><i aria-hidden="true"/></header>
                 <div className="progress-line"><span/></div>
                 <section className="connect-copy"><p className="kicker">只差一步</p><h2>邀请 TA 加入<br/>你们的共同空间</h2><p>TA 需要亲自确认资料与隐私授权；接受邀请不等于同意照片下载或 AI 分析。</p></section>
-                <div className="invite-card"><span className="mini-label">我的邀请码</span><strong translate="no">LOVE 0520</strong><button onClick={async () => {try {await navigator.clipboard.writeText("LOVE 0520");notify("邀请码已复制");} catch {notify("复制失败，请长按邀请码手动复制");}}}>复制邀请码</button></div>
+                <div className="invite-card"><span className="mini-label">我的邀请码</span><strong translate="no">LOVE 0520</strong><button className="invite-copy-button" onClick={async () => {try {await navigator.clipboard.writeText("LOVE 0520");notify("邀请码已复制");} catch {notify("复制失败，请长按邀请码手动复制");}}}>复制邀请码</button></div>
                 <div className="divider"><span>或者</span></div>
                 <button className="secondary-button" onClick={() => notify("已模拟扫码连接")}>▣ 扫描 TA 的二维码</button>
                 <div className="connect-visual"><div className="avatar a">{profile.name.slice(0,1)}</div><span>♥</span><div className="avatar b">{partnerProfile.name.slice(0,1)}</div></div>

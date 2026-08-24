@@ -105,3 +105,5 @@ html{overflow-x:hidden}body{overflow-x:hidden}button,a,input,textarea,summary{to
 .create-form select:focus-visible{outline:3px solid #7f4a4a;outline-offset:3px;border-radius:8px}
 .similar-warning a{color:var(--rose);font-size:11px;text-decoration-thickness:1px;text-underline-offset:3px}
 .replace-place:disabled{color:var(--muted);opacity:.55;cursor:not-allowed}
+.phone .invite-card{height:auto;min-height:116px;align-items:flex-start;padding:19px}
+.phone .invite-card .invite-copy-button{position:static;width:auto;align-self:flex-start;margin-top:14px;padding:9px 16px;line-height:1.2;white-space:nowrap}
