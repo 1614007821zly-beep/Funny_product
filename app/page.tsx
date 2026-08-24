@@ -5,9 +5,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type Screen = "welcome" | "age" | "profileSetup" | "connect" | "relationshipReady" | "home" | "inspire" | "loading" | "results" | "plan" | "location" | "confirm" | "schedule" | "calendar" | "memory" | "memories" | "memoryCreate" | "task" | "taskHistory" | "profile" | "settings" | "notifications" | "privacy" | "relationshipSafety" | "relationshipArchive" | "important" | "importantCreate";
 type Tab = "home" | "inspire" | "calendar" | "settings";
 type Panel = "" | "edit" | "cancel" | "memoryEdit" | "retractMemory" | "deleteMemory" | "calendarAdd" | "profileEdit" | "cityEdit" | "normalExit" | "safetyExit" | "reportSafety" | "clearData";
-type Place = { id: string; name: string; address: string; location: string; type: string; verifiedBy: "amap" };
+type Place = { id: string; name: string; address: string; location: string; type: string; distance: number | null; businessArea: string; rating: string; cost: string; openTimeToday: string; verifiedBy: "amap" };
 type TimelineNode = { time: string; title: string; description: string };
-type Plan = { eyebrow: string; title: string; meta: string; desc: string; tone: string; duration?: string; timeline?: TimelineNode[]; place?: Place | null };
+type Plan = { eyebrow: string; title: string; meta: string; desc: string; tone: string; duration?: string; timeline?: TimelineNode[]; places?: Place[] };
 
 const Arrow = () => <span aria-hidden="true">→</span>;
 const Back = ({ onClick }: { onClick: () => void }) => <button className="icon-button" onClick={onClick} aria-label="返回">‹</button>;
@@ -62,6 +62,8 @@ export default function Home() {
   const [selectedDay, setSelectedDay] = useState(8);
   const [monthOffset, setMonthOffset] = useState(0);
   const [placeVersion, setPlaceVersion] = useState(0);
+  const [selectedPlaceIndexes, setSelectedPlaceIndexes] = useState([0, 0, 0]);
+  const [locationPrefs, setLocationPrefs] = useState<{ district: string; radius: number; longitude: number | null; latitude: number | null; label: string }>({ district: "", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
   const [choices, setChoices] = useState({ mood: "想放松", taMood: "和我一样", vibe: "安静", time: "今晚", budget: "¥100–300", space: "都可以", special: "" });
   const [myStates, setMyStates] = useState<string[]>(["想放松"]);
   const [customStates, setCustomStates] = useState<string[]>([]);
@@ -78,7 +80,8 @@ export default function Home() {
     meta: `${choices.time} · ${choices.budget}`,
   })), [aiPlans, choices]);
   const currentPlan = dynamicPlans[selectedPlan];
-  const currentPlace = currentPlan.place ?? null;
+  const currentPlaceCandidates = currentPlan.places ?? [];
+  const currentPlace = currentPlaceCandidates[selectedPlaceIndexes[selectedPlan] ?? 0] ?? null;
   const amapMapUrl = currentPlace ? `https://uri.amap.com/marker?position=${encodeURIComponent(currentPlace.location)}&name=${encodeURIComponent(currentPlace.name)}&src=love-diary&coordinate=gaode&callnative=0` : "";
   const eventDate = useMemo(() => new Date(2026, 7, 8), []);
   const eventDateLong = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" }).format(eventDate);
@@ -104,6 +107,15 @@ export default function Home() {
   function go(next: Screen, replace = false) { if (screen === "loading" && next !== "results") { if (generationTimer.current) { window.clearTimeout(generationTimer.current); generationTimer.current = null; } requestController.current?.abort(); } if (!replace) history.current.push(screen); const method = replace ? "replaceState" : "pushState"; window.history[method]({ screen: next }, "", `#${next}`); setScreen(next); window.scrollTo({ top: 0, behavior: "smooth" }); }
   function back(fallback: Screen = "home") { const previous = history.current.pop(); if (previous) window.history.back(); else go(fallback, true); }
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 1800); }
+  function useCurrentLocation() {
+    if (!navigator.geolocation) { notify("当前浏览器不支持定位，请填写商圈"); return; }
+    notify("正在获取当前位置…");
+    navigator.geolocation.getCurrentPosition(
+      position => { setLocationPrefs(current => ({ ...current, longitude: position.coords.longitude, latitude: position.coords.latitude, label: `已定位 · 精度约 ${Math.round(position.coords.accuracy)} 米` })); notify("已获取当前位置，仅用于本次附近搜索"); },
+      () => notify("无法获取定位，请允许权限或手动填写商圈"),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
+    );
+  }
   async function generate(shouldFail = false) {
     requestController.current?.abort();
     if (shouldFail) { setGenerationError("这是手动触发的失败状态预览。"); setLoadingFailed(true); go("loading"); return; }
@@ -114,18 +126,18 @@ export default function Home() {
       const response = await fetch("/api/inspiration", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ city: profile.city, moods: myStates, partnerMood: choices.taMood, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special }),
+        body: JSON.stringify({ city: profile.city, moods: myStates, partnerMood: choices.taMood, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special, district: locationPrefs.district, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude }),
         signal: controller.signal,
       });
-      const data = await response.json() as { plans?: Array<{ title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; place?: Place | null }>; error?: string; code?: string };
+      const data = await response.json() as { plans?: Array<{ title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[] }>; error?: string; code?: string };
       if (data.code === "AI_NOT_CONFIGURED") {
         setAiPlans(null); setSelectedPlan(0); setHasGenerated(true); go("results");
         notify("AI 密钥尚未配置，当前显示演示方案");
         return;
       }
       if (!response.ok || !data.plans) throw new Error(data.error || "灵感暂时没有生成成功。");
-      setAiPlans(data.plans.map((plan, index) => ({ eyebrow: index === 0 ? "主方案 · AI 实时生成" : "备选 · AI 实时生成", title: plan.title, meta: `${choices.time} · ${plan.budgetLabel}`, desc: plan.summary, tone: ["primary", "cream", "lilac"][index] ?? "cream", duration: plan.duration, timeline: plan.timeline, place: plan.place })));
-      setSelectedPlan(0); setHasGenerated(true); go("results");
+      setAiPlans(data.plans.map((plan, index) => ({ eyebrow: index === 0 ? "主方案 · AI 实时生成" : "备选 · AI 实时生成", title: plan.title, meta: `${choices.time} · ${plan.budgetLabel}`, desc: plan.summary, tone: ["primary", "cream", "lilac"][index] ?? "cream", duration: plan.duration, timeline: plan.timeline, places: plan.places })));
+      setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); setHasGenerated(true); go("results");
     } catch (error) {
       if (controller.signal.aborted) return;
       setGenerationError(error instanceof Error ? error.message : "灵感暂时没有生成成功。");
@@ -287,6 +299,7 @@ export default function Home() {
                 <header><button className="location-button" onClick={() => setPanel("cityEdit")} aria-label={`切换城市，当前为${profile.city}`}>{profile.city}⌄</button><span className="header-title">找灵感</span><button className="text-button" onClick={() => {setMyStates(["想放松"]);setChoices({ mood:"想放松",taMood:"和我一样",vibe:"安静",time:"今晚",budget:"¥100–300",space:"都可以",special:"" });}}>重置条件</button></header>
                 {taskAccepted && <div className="context-banner"><span>本次灵感目标</span><b>为「交换一首最近常听的歌」找灵感</b><button onClick={() => setTaskAccepted(false)} aria-label="移除情侣任务灵感目标">×</button></div>}
                 <div className="form-intro"><p className="kicker">此刻的你们</p><h2>今天想和 TA<br/>怎么度过？</h2><p>不用想得太具体，选几个直觉答案就好。</p></div>
+                <section className="nearby-settings" aria-labelledby="nearby-title"><div className="nearby-heading"><div><p className="kicker">从哪里出发</p><h3 id="nearby-title">优先推荐附近地点</h3></div><button type="button" onClick={useCurrentLocation}>⌖ 使用当前位置</button></div><p className="location-status">{locationPrefs.label}</p><label>商圈或区域（可选）<input name="business-district" autoComplete="address-level3" value={locationPrefs.district} onChange={event=>setLocationPrefs({...locationPrefs,district:event.target.value})} maxLength={40} placeholder="例如：西湖区、武林广场、国贸"/></label><div className="radius-choice" aria-label="地点搜索范围">{[[3000,"3 公里"],[5000,"5 公里"],[10000,"10 公里"]] .map(([radius,label])=><button type="button" key={radius} className={locationPrefs.radius===radius?"active":""} aria-pressed={locationPrefs.radius===radius} onClick={()=>setLocationPrefs({...locationPrefs,radius:Number(radius)})}>{label}</button>)}</div><small>定位只用于本次附近搜索，不保存在共同资料中；也可以拒绝定位并手动填写商圈。</small></section>
                 <MultiChoice title="我的状态（最多选2项）" options={["想放松", "有点累", "想热闹", "想尝鲜", "想认真聊聊", ...customStates]} values={myStates} setValues={(values)=>{setMyStates(values);setChoices({...choices,mood:values[0]??"想放松"});}}/>
                 <div className="custom-state-editor"><label htmlFor="custom-state">没有合适的状态？</label><div><input id="custom-state" aria-label="自定义状态" name="custom-state" autoComplete="off" value={newState} onChange={e=>setNewState(e.target.value)} maxLength={10} placeholder="例如：刚加完班…"/><button onClick={()=>{const value=newState.trim();if(!value)return;if(!customStates.includes(value))setCustomStates([...customStates,value]);setNewState("");notify("已加入自定义状态，可立即选择");}}>＋ 添加</button></div>{customStates.length>0&&<p>自定义状态可重复使用；点击右侧删除： {customStates.map(state=><button key={state} onClick={()=>{setCustomStates(customStates.filter(x=>x!==state));setMyStates(myStates.filter(x=>x!==state));}}>{state} ×</button>)}</p>}</div>
                 <Choice title="TA 呢？" options={["和我一样", "想放松", "想热闹", "不知道"]} value={choices.taMood} setValue={(taMood) => setChoices({...choices,taMood})}/>
@@ -325,7 +338,7 @@ export default function Home() {
               </div>
             )}
 
-            {screen === "location" && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span>{currentPlace ? <a className="icon-button" href={amapMapUrl} target="_blank" rel="noreferrer" aria-label="在高德地图中打开地点">↗</a> : <button className="icon-button" onClick={() => notify("本方案尚未匹配到真实地点")} aria-label="地点尚未匹配">↗</button>}</header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>{currentPlace ? "高德地图地点数据" : "AI 地点建议 · 未核验"}</span></div><section className="place-title"><p className="kicker">{currentPlace ? "真实地点已匹配 · 营业信息请出发前确认" : "尚未匹配到真实地点"}</p><h2>{currentPlace?.name || currentPlan.title}</h2><p>{currentPlace?.address || `请在${profile.city}重新生成或更换搜索条件`}</p></section><section className="info-group"><InfoRow label="计划时段" value="以最终安排为准"/><InfoRow label="地点类型" value={currentPlace?.type || "AI 建议"}/><InfoRow label="坐标" value={currentPlace?.location || "尚未获取"}/><InfoRow label="营业时间" value="高德地点搜索未提供，需另行确认"/><InfoRow label="地点来源" value={currentPlace ? "高德地图 Web 服务" : "AIHubMix 建议"}/></section><section className="place-notice"><b>执行提示</b><p>{currentPlace ? "地点名称、地址和坐标来自高德地图；营业状态、排队情况与价格可能变化，请出发前确认。" : "AI 不会编造具体商家。重新生成后，系统会尝试用高德地图匹配真实地点。"}</p></section>{currentPlace ? <a className="primary-button map-link" href={amapMapUrl} target="_blank" rel="noreferrer">在高德地图中查看 <Arrow/></a> : <button className="primary-button" onClick={() => {go("inspire");notify("请调整关键词后重新生成");}}>返回调整条件 <Arrow/></button>}<button className="ghost-button" onClick={() => {setSelectedPlan((selectedPlan+1)%3);go("plan");}}>查看另一个方案</button></div>}
+            {screen === "location" && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span>{currentPlace ? <a className="icon-button" href={amapMapUrl} target="_blank" rel="noreferrer" aria-label="在高德地图中打开地点">↗</a> : <button className="icon-button" onClick={() => notify("本方案尚未匹配到真实地点")} aria-label="地点尚未匹配">↗</button>}</header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>{currentPlace ? "高德地图地点数据" : "AI 地点建议 · 未核验"}</span></div><section className="place-title"><p className="kicker">{currentPlace ? "真实地点已匹配 · 营业信息请出发前确认" : "尚未匹配到真实地点"}</p><h2>{currentPlace?.name || currentPlan.title}</h2><p>{currentPlace?.address || `请在${profile.city}重新生成或更换搜索条件`}</p></section><section className="info-group"><InfoRow label="计划时段" value="以最终安排为准"/><InfoRow label="地点类型" value={currentPlace?.type || "AI 建议"}/><InfoRow label="坐标" value={currentPlace?.location || "尚未获取"}/><InfoRow label="营业时间" value="高德地点搜索未提供，需另行确认"/><InfoRow label="地点来源" value={currentPlace ? "高德地图 Web 服务" : "AIHubMix 建议"}/></section><PlaceCandidates places={currentPlaceCandidates} selectedId={currentPlace?.id} onSelect={(index)=>{setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?index:value));setPlaceVersion(index);}}/><section className="place-notice"><b>执行提示</b><p>{currentPlace ? "地点名称、地址和坐标来自高德地图；营业状态、排队情况与价格可能变化，请出发前确认。" : "AI 不会编造具体商家。重新生成后，系统会尝试用高德地图匹配真实地点。"}</p></section>{currentPlace ? <a className="primary-button map-link" href={amapMapUrl} target="_blank" rel="noreferrer">在高德地图中查看 <Arrow/></a> : <button className="primary-button" onClick={() => {go("inspire");notify("请调整关键词后重新生成");}}>返回调整条件 <Arrow/></button>}<button className="ghost-button" onClick={() => {setSelectedPlan((selectedPlan+1)%3);go("plan");}}>查看另一个方案</button></div>}
 
             {screen === "confirm" && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>确认安排</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>发给 TA，<br/>一起决定。</h2><p className="confirm-copy">你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”，不会被当作双方已确定的事实。</p></section><section className="confirm-card"><label>安排名称<input name="schedule-title" autoComplete="off" defaultValue={currentPlan.title}/></label><label>日期<input name="schedule-date" type="date" autoComplete="off" defaultValue="2026-08-08"/></label><label>开始时间<input name="schedule-time" type="time" autoComplete="off" defaultValue="18:30"/></label><label>所在城市<input name="schedule-city" autoComplete="address-level2" defaultValue={profile.city}/></label></section>{taskAccepted && <section className="link-context"><span>♫</span><div><b>关联情侣任务</b><p>交换一首最近常听的歌</p></div><em>TA 接受后关联</em></section>}<button className="primary-button" onClick={() => {setAdopted(true);setPartnerAccepted(false);setTaskLinked(taskAccepted);go("schedule");}}>发给 TA 确认 <Arrow/></button><button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
 
@@ -403,6 +416,10 @@ function Choice({ title, options, value, setValue }: { title: string; options: s
 
 function MultiChoice({ title, options, values, setValues }: { title: string; options: string[]; values: string[]; setValues: (v: string[]) => void }) {
   return <section className="choice-group" role="group" aria-label={title}><h3>{title}</h3><div>{options.map(option => <Pill key={option} active={values.includes(option)} onClick={() => values.includes(option) ? setValues(values.filter(v=>v!==option)) : values.length < 2 ? setValues([...values,option]) : setValues([values[1],option])}>{option}</Pill>)}</div><p className="choice-help" aria-live="polite">已选择 {values.length}/2 · 选择第 3 项时会替换最早选择</p></section>;
+}
+
+function PlaceCandidates({ places, selectedId, onSelect }: { places: Place[]; selectedId?: string; onSelect: (index: number) => void }) {
+  return <section className="place-candidates" aria-label="附近地点候选"><div className="section-heading"><div><p className="kicker">附近候选</p><h3>选择更合适的地点</h3></div><span>{places.length} 个真实地点</span></div>{places.length ? places.map((place, index) => <button type="button" key={place.id} className={selectedId === place.id ? "selected" : ""} aria-pressed={selectedId === place.id} onClick={() => onSelect(index)}><div><b>{place.name}</b><small>{place.businessArea || place.address}</small></div><span>{place.distance !== null ? `${(place.distance / 1000).toFixed(1)} km` : "查看"}</span></button>) : <p className="candidate-empty">附近没有匹配到地点，请扩大范围或调整商圈。</p>}</section>;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) { return <div className="info-row"><span>{label}</span><b>{value}</b><i aria-hidden="true">›</i></div>; }

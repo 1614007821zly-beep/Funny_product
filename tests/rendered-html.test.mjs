@@ -58,6 +58,10 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(api, /while \(timeline\.length < 3\)/);
   assert.match(api, /fetchWithNetworkRetry/);
   assert.match(api, /restapi\.amap\.com\/v5\/place\/text/);
+  assert.match(api, /restapi\.amap\.com\/v5\/place\/around/);
+  assert.match(api, /sortrule/);
+  assert.match(page, /navigator\.geolocation/);
+  assert.match(page, /PlaceCandidates/);
   assert.match(api, /RATE_LIMIT/);
   assert.match(api, /SENSITIVE_INPUT/);
   assert.match(page, /AI 密钥尚未配置，当前显示演示方案/);

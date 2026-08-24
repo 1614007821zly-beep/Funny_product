@@ -7,6 +7,10 @@ type InspirationRequest = {
   budget?: string;
   space?: string;
   special?: string;
+  district?: string;
+  radius?: number;
+  longitude?: number;
+  latitude?: number;
 };
 
 type AmapPlace = {
@@ -15,6 +19,11 @@ type AmapPlace = {
   address: string;
   location: string;
   type: string;
+  distance: number | null;
+  businessArea: string;
+  rating: string;
+  cost: string;
+  openTimeToday: string;
   verifiedBy: "amap";
 };
 
@@ -25,7 +34,7 @@ type GeneratedPlan = {
   budgetLabel: string;
   placeQuery: string;
   timeline: Array<{ time: string; title: string; description: string }>;
-  place?: AmapPlace | null;
+  places?: AmapPlace[];
 };
 
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
@@ -57,7 +66,7 @@ export async function POST(request: Request) {
     const plans = await generatePlans(aiHubMixKey, safeInput);
     const enriched = await Promise.all(plans.map(async plan => ({
       ...plan,
-      place: amapKey ? await searchAmapPlace(amapKey, safeInput.city, plan.placeQuery) : null,
+      places: amapKey ? await searchAmapPlaces(amapKey, safeInput, plan.placeQuery) : [],
     })));
     return json({ plans: enriched, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置" } });
   } catch (error) {
@@ -70,6 +79,7 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   const prompt = [
     "你是情侣共同生活规划助手。请生成3个安全、现实、不过度浪漫化的约会灵感。",
     "返回 JSON：plans 正好3项；每项包含 title、summary、duration、budgetLabel、placeQuery、timeline；timeline 正好3项，每项包含 time、title、description。",
+    "placeQuery 只能填写一个标准地点类别词：公园、咖啡馆、餐厅、书店、博物馆、美术馆、电影院、商场、酒吧、甜品店、夜市、景区、剧院、陶艺馆。",
     "不得编造具体商家、营业时间、评分、价格或交通事实；具体地点只写可用于地图检索的通用关键词。",
     "不要推断关系质量、情绪原因或任何未提供的个人信息。",
     `城市：${input.city}`,
@@ -79,6 +89,8 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
     `时间：${input.time}`,
     `预算：${input.budget}`,
     `空间：${input.space}`,
+    `优先商圈：${input.district || "未指定"}`,
+    `搜索范围：${Math.round(input.radius / 1000)}公里`,
     `特殊要求：${input.special || "无"}`,
   ].join("\n");
 
@@ -108,27 +120,39 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   return parsed.plans.map(validatePlan);
 }
 
-async function searchAmapPlace(apiKey: string, city: string, keywords: string): Promise<AmapPlace | null> {
-  const url = new URL("https://restapi.amap.com/v5/place/text");
+async function searchAmapPlaces(apiKey: string, input: Required<InspirationRequest>, keywords: string): Promise<AmapPlace[]> {
+  const hasCoordinates = validCoordinates(input.longitude, input.latitude);
+  const url = new URL(hasCoordinates ? "https://restapi.amap.com/v5/place/around" : "https://restapi.amap.com/v5/place/text");
   url.searchParams.set("key", apiKey);
-  url.searchParams.set("keywords", keywords.slice(0, 80));
-  url.searchParams.set("region", city);
+  const searchKeyword = normalizePlaceKeyword(keywords);
+  url.searchParams.set("keywords", `${hasCoordinates ? "" : input.district ? `${input.district} ` : ""}${searchKeyword}`.slice(0, 80));
+  url.searchParams.set("region", input.city);
   url.searchParams.set("city_limit", "true");
-  url.searchParams.set("page_size", "3");
+  url.searchParams.set("page_size", "15");
+  url.searchParams.set("show_fields", "business");
+  if (hasCoordinates) {
+    url.searchParams.set("location", `${input.longitude.toFixed(6)},${input.latitude.toFixed(6)}`);
+    url.searchParams.set("radius", String(input.radius));
+    url.searchParams.set("sortrule", "distance");
+  }
 
   const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
-  if (!response.ok) return null;
+  if (!response.ok) return [];
   const data = await response.json() as { status?: string; pois?: Array<Record<string, unknown>> };
-  const poi = data.status === "1" ? data.pois?.[0] : undefined;
-  if (!poi || typeof poi.name !== "string" || typeof poi.location !== "string") return null;
-  return {
-    id: stringValue(poi.id),
-    name: poi.name,
-    address: stringValue(poi.address) || stringValue(poi.pname) + stringValue(poi.cityname) + stringValue(poi.adname),
-    location: poi.location,
-    type: stringValue(poi.type),
-    verifiedBy: "amap",
-  };
+  if (data.status !== "1" || !Array.isArray(data.pois)) return [];
+  const seen = new Set<string>();
+  return data.pois.flatMap(poi => {
+    if (typeof poi.name !== "string" || typeof poi.location !== "string" || seen.has(poi.id as string)) return [];
+    seen.add(stringValue(poi.id));
+    const business = objectValue(poi.business);
+    return [{
+      id: stringValue(poi.id), name: poi.name,
+      address: stringValue(poi.address) || stringValue(poi.pname) + stringValue(poi.cityname) + stringValue(poi.adname),
+      location: poi.location, type: stringValue(poi.type), distance: numberValue(poi.distance),
+      businessArea: stringValue(business.business_area), rating: stringValue(business.rating), cost: stringValue(business.cost),
+      openTimeToday: stringValue(business.opentime_today), verifiedBy: "amap" as const,
+    }];
+  }).slice(0, 3);
 }
 
 function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> {
@@ -141,6 +165,10 @@ function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> 
     budget: clean(input.budget, 20),
     space: clean(input.space, 20),
     special: clean(input.special, 120),
+    district: clean(input.district, 40),
+    radius: clampNumber(input.radius, 1000, 20000, 5000),
+    longitude: finiteNumber(input.longitude),
+    latitude: finiteNumber(input.latitude),
   };
 }
 
@@ -182,4 +210,10 @@ async function fetchWithNetworkRetry(input: string | URL, init: RequestInit) {
   }
 }
 function stringValue(value: unknown) { return typeof value === "string" ? value : ""; }
+function objectValue(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function finiteNumber(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
+function clampNumber(value: unknown, min: number, max: number, fallback: number) { const number = finiteNumber(value); return number ? Math.min(max, Math.max(min, number)) : fallback; }
+function numberValue(value: unknown) { const number = Number(value); return Number.isFinite(number) ? number : null; }
+function validCoordinates(longitude: number, latitude: number) { return longitude >= 73 && longitude <= 136 && latitude >= 3 && latitude <= 54; }
+function normalizePlaceKeyword(value: string) { const categories = ["公园", "咖啡馆", "餐厅", "书店", "博物馆", "美术馆", "电影院", "商场", "酒吧", "甜品店", "夜市", "景区", "剧院", "陶艺馆"]; return categories.find(category => value.includes(category)) ?? clean(value, 20); }
 function json(body: unknown, status = 200) { return Response.json(body, { status, headers: { "cache-control": "no-store" } }); }
