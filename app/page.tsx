@@ -8,6 +8,7 @@ type Panel = "" | "edit" | "cancel" | "memoryEdit" | "retractMemory" | "deleteMe
 type Place = { id: string; name: string; address: string; location: string; type: string; distance: number | null; businessArea: string; rating: string; cost: string; openTimeToday: string; verifiedBy: "amap" };
 type TimelineNode = { time: string; title: string; description: string };
 type Plan = { eyebrow: string; title: string; meta: string; desc: string; tone: string; duration?: string; timeline?: TimelineNode[]; places?: Place[] };
+type AccountSnapshot = { authenticated: boolean; user?: { id: string; email: string; nickname: string; birthday: string | null; city: string }; relationship?: { id: string; status: string; partner_id: string | null; partner_name: string | null; partner_birthday: string | null } | null; invite?: { code: string; partner_note: string | null; expires_at: string; status: string } | null };
 
 const Arrow = () => <span aria-hidden="true">→</span>;
 const Back = ({ onClick }: { onClick: () => void }) => <button className="icon-button" onClick={onClick} aria-label="返回">‹</button>;
@@ -37,6 +38,12 @@ export default function Home() {
   const [agreementChecked, setAgreementChecked] = useState(false);
   const [ageError, setAgeError] = useState("");
   const [profileError, setProfileError] = useState("");
+  const [account, setAccount] = useState<AccountSnapshot | null>(null);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [onboardingIntent, setOnboardingIntent] = useState<"invite" | "join">("invite");
+  const [inviteCodeValue, setInviteCodeValue] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [relationshipError, setRelationshipError] = useState("");
   const [profile, setProfile] = useState({ name: "林予", birthday: "4月18日", city: "杭州" });
   const [partnerProfile, setPartnerProfile] = useState({ name: "周宁", birthday: "11月6日" });
   const [isLocating, setIsLocating] = useState(false);
@@ -118,6 +125,58 @@ export default function Home() {
   function go(next: Screen, replace = false) { if (screen === "loading" && next !== "results") { if (generationTimer.current) { window.clearTimeout(generationTimer.current); generationTimer.current = null; } requestController.current?.abort(); } if (!replace) history.current.push(screen); const method = replace ? "replaceState" : "pushState"; window.history[method]({ screen: next }, "", `#${next}`); setScreen(next); window.scrollTo({ top: 0, behavior: "smooth" }); }
   function back(fallback: Screen = "home") { const previous = history.current.pop(); if (previous) window.history.back(); else go(fallback, true); }
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 1800); }
+  async function loadAccount(silent = false) {
+    try {
+      const response = await fetch("/api/account", { cache: "no-store" });
+      const data = await response.json() as AccountSnapshot;
+      if (response.status === 401) { setAccount({ authenticated: false }); return null; }
+      if (!response.ok) throw new Error("账号状态读取失败");
+      setAccount(data);
+      if (data.user) setProfile({ name: data.user.nickname, birthday: data.user.birthday ?? "", city: data.user.city });
+      if (data.invite?.code) setInviteCodeValue(data.invite.code);
+      if (data.relationship?.partner_id) {
+        setPartnerProfile({ name: data.relationship.partner_name ?? "TA", birthday: data.relationship.partner_birthday ?? "" });
+        setHasStarted(true);
+        if (screen === "connect") go("relationshipReady", true);
+      }
+      return data;
+    } catch {
+      if (!silent) setRelationshipError("暂时无法连接账号服务，请稍后重试。");
+      return null;
+    }
+  }
+  async function createRelationshipInvite() {
+    setAccountBusy(true); setRelationshipError("");
+    try {
+      const response = await fetch("/api/relationship/invite", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ partnerNote: partnerProfile.name }) });
+      const data = await response.json() as { code?: string; error?: string };
+      if (!response.ok || !data.code) throw new Error(data.error || "邀请码生成失败。");
+      setInviteCodeValue(data.code); notify("真实邀请码已生成，7 天内有效");
+    } catch (error) { setRelationshipError(error instanceof Error ? error.message : "邀请码生成失败。"); }
+    finally { setAccountBusy(false); }
+  }
+  async function saveProfileAndContinue() {
+    if (!profile.name.trim() || (onboardingIntent === "invite" && !partnerProfile.name.trim())) { setProfileError("请填写昵称和邀请称呼后继续。"); window.requestAnimationFrame(()=>profileErrorRef.current?.focus()); return; }
+    setAccountBusy(true); setProfileError("");
+    try {
+      const response = await fetch("/api/account", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nickname: profile.name, birthday: profile.birthday, city: profile.city }) });
+      const data = await response.json() as AccountSnapshot & { error?: string };
+      if (!response.ok) throw new Error(data.error || "资料保存失败。");
+      setAccount(data); go("connect");
+      if (onboardingIntent === "invite") window.setTimeout(() => void createRelationshipInvite(), 0);
+    } catch (error) { setProfileError(error instanceof Error ? error.message : "资料保存失败。"); }
+    finally { setAccountBusy(false); }
+  }
+  async function joinRelationship() {
+    setAccountBusy(true); setRelationshipError("");
+    try {
+      const response = await fetch("/api/relationship/join", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: joinCode }) });
+      const data = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !data.ok) throw new Error(data.error || "加入关系失败。");
+      await loadAccount(); go("relationshipReady", true);
+    } catch (error) { setRelationshipError(error instanceof Error ? error.message : "加入关系失败。"); }
+    finally { setAccountBusy(false); }
+  }
   function useCurrentLocation() {
     if (!navigator.geolocation) { notify("当前浏览器不支持定位，请填写商圈"); return; }
     if (isLocating) return;
@@ -162,6 +221,20 @@ export default function Home() {
   function resetJourney() {
     setAdopted(false); setPartnerAccepted(false); setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); setCancelled(false); setTaskLinked(false); setTaskDone(false); setMemoryDeleted(false); go("home");
   }
+
+  useEffect(() => {
+    // The remote account snapshot is authoritative and arrives asynchronously.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadAccount(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (screen !== "connect" || !account?.authenticated || account.relationship?.partner_id) return;
+    const timer = window.setInterval(() => void loadAccount(true), 5000);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, account?.authenticated, account?.relationship?.partner_id]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("love-diary-v112") ?? window.localStorage.getItem("love-diary-v17") ?? window.localStorage.getItem("love-diary-v16") ?? window.localStorage.getItem("love-diary-v15") ?? window.localStorage.getItem("love-diary-v14");
@@ -279,24 +352,26 @@ export default function Home() {
                 <div className="soft-orb orb-one"/><div className="soft-orb orb-two"/>
                 <div className="welcome-symbol"><span>♥</span><span>♥</span></div>
                 <div className="welcome-copy"><p className="kicker">恋爱日记</p><h2>两个人的生活，<br/>值得被温柔记住。</h2><p>一起计划，一起经历，<br/>也一起拥有属于我们的回忆。</p></div>
-                <div className="welcome-actions"><button className="primary-button" onClick={() => go("age")}>开始我们的故事 <Arrow /></button><p>下一步将单独确认年龄、协议与隐私说明</p></div>
+                <div className="welcome-actions">{account?.authenticated ? <><button className="primary-button" onClick={() => {setOnboardingIntent("invite");go(hasStarted?"home":"age");}}>{hasStarted?"进入我们的空间":"创建关系邀请"} <Arrow /></button>{!hasStarted&&<button className="ghost-button welcome-join" onClick={() => {setOnboardingIntent("join");go("age");}}>我有 TA 的邀请码</button>}<a className="account-link" href="/signout-with-chatgpt?return_to=%2F">退出当前账号</a></> : <><a className="primary-button sign-in-button" href="/signin-with-chatgpt?return_to=%2F">使用 ChatGPT 登录 <Arrow /></a><p>登录后，每个人独立管理自己的资料与授权</p></>}</div>
               </div>
             )}
 
             {screen === "age" && <div className="page formal-page onboarding-page"><header><Back onClick={() => back("welcome")}/><span>开始前确认</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">清楚，再继续</p><h2>这是两个人的共同空间。</h2><p className="confirm-copy">恋爱日记仅面向已满 18 周岁的用户。你们的生活数据不会因 AI 建议自动变成事实。</p></section><section className="consent-card"><label htmlFor="age-confirmation" aria-label="确认已满 18 周岁"><input id="age-confirmation" type="checkbox" name="age-confirmation" checked={ageChecked} onChange={e=>{setAgeChecked(e.target.checked);setAgeError("");}}/><span><b>我已满 18 周岁</b><small>未满 18 周岁无法继续使用</small></span></label><label htmlFor="agreement-confirmation" aria-label="同意用户协议与隐私说明"><input id="agreement-confirmation" type="checkbox" name="agreement-confirmation" checked={agreementChecked} onChange={e=>{setAgreementChecked(e.target.checked);setAgeError("");}}/><span><b>我已阅读并同意用户协议与隐私说明</b><small>可随时在设置中再次查看</small></span></label><div className="consent-links"><button onClick={()=>notify("用户协议：共同内容须经用户主动确认")}>用户协议</button><button onClick={()=>go("privacy")}>隐私与 AI 说明</button></div></section><button className="primary-button" onClick={()=>{if(!ageChecked||!agreementChecked){setAgeError("请确认年龄，并同意用户协议与隐私说明。");window.requestAnimationFrame(()=>ageErrorRef.current?.focus());return;}go("profileSetup");}}>继续填写资料 <Arrow/></button>{ageError&&<p ref={ageErrorRef} className="field-error" role="alert" tabIndex={-1}>{ageError}</p>}</div>}
 
-            {screen === "profileSetup" && <div className="page formal-page onboarding-page"><header><Back onClick={()=>back("age")}/><span>我的资料与邀请备注</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">先从自己开始</p><h2>你的资料由你确认，<br/>TA 的资料交给 TA。</h2><p className="confirm-copy">连接前填写的称呼只是本机邀请备注，不是 TA 的正式资料；邀请失效后会自动删除，也不会用于 AI 分析。</p></section><section className="create-form"><p className="form-section-label">我的资料</p><label>我的昵称 <em>必填</em><input name="my-name" autoComplete="name" spellCheck={false} maxLength={30} value={profile.name} onChange={e=>{setProfile({...profile,name:e.target.value});setProfileError("");}}/></label><label>我的生日 <small>选填，仅由我管理</small><input name="my-birthday" autoComplete="bday" inputMode="numeric" maxLength={20} value={profile.birthday} onChange={e=>setProfile({...profile,birthday:e.target.value})}/></label><label>当前城市 <small>可随时临时切换</small><input name="city" autoComplete="address-level2" maxLength={40} value={profile.city} onChange={e=>setProfile({...profile,city:e.target.value})}/></label><p className="form-section-label partner-label">邀请备注</p><label>怎么称呼 TA <em>必填</em><input name="partner-invite-note" autoComplete="off" spellCheck={false} maxLength={30} value={partnerProfile.name} onChange={e=>{setPartnerProfile({...partnerProfile,name:e.target.value,birthday:""});setProfileError("");}}/></label><p className="partner-note">TA 加入时需自行确认昵称、生日及敏感信息授权；当前称呼最多保留 7 天。</p></section>{profileError&&<p ref={profileErrorRef} className="field-error" role="alert" tabIndex={-1}>{profileError}</p>}<button className="primary-button" onClick={()=>{if(!profile.name.trim()||!partnerProfile.name.trim()){setProfileError("请填写我的昵称和邀请称呼后继续。");window.requestAnimationFrame(()=>profileErrorRef.current?.focus());return;}go("connect");}}>保存我的资料并生成邀请 <Arrow/></button></div>}
+            {screen === "profileSetup" && <div className="page formal-page onboarding-page"><header><Back onClick={()=>back("age")}/><span>{onboardingIntent==="invite"?"我的资料与邀请备注":"确认我的资料"}</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">先从自己开始</p><h2>你的资料由你确认，<br/>TA 的资料交给 TA。</h2><p className="confirm-copy">双方使用各自账号确认资料；关系建立后，也不能代替对方修改个人资料。</p></section><section className="create-form"><p className="form-section-label">我的资料</p><label>我的昵称 <em>必填</em><input name="my-name" autoComplete="name" spellCheck={false} maxLength={30} value={profile.name} onChange={e=>{setProfile({...profile,name:e.target.value});setProfileError("");}}/></label><label>我的生日 <small>选填，仅由我管理</small><input name="my-birthday" autoComplete="bday" inputMode="numeric" maxLength={20} value={profile.birthday} onChange={e=>setProfile({...profile,birthday:e.target.value})}/></label><label>当前城市 <small>可随时临时切换</small><input name="city" autoComplete="address-level2" maxLength={40} value={profile.city} onChange={e=>setProfile({...profile,city:e.target.value})}/></label>{onboardingIntent==="invite"&&<><p className="form-section-label partner-label">邀请备注</p><label>怎么称呼 TA <em>必填</em><input name="partner-invite-note" autoComplete="off" spellCheck={false} maxLength={30} value={partnerProfile.name} onChange={e=>{setPartnerProfile({...partnerProfile,name:e.target.value,birthday:""});setProfileError("");}}/></label><p className="partner-note">这只是邀请备注。TA 加入后，将显示 TA 自己确认的昵称。</p></>}</section>{profileError&&<p ref={profileErrorRef} className="field-error" role="alert" tabIndex={-1}>{profileError}</p>}<button className="primary-button" disabled={accountBusy} onClick={()=>void saveProfileAndContinue()}>{accountBusy?"正在保存…":onboardingIntent==="invite"?"保存并生成真实邀请":"保存并输入邀请码"} <Arrow/></button></div>}
 
             {screen === "connect" && (
               <div className="page connect-page">
                 <header><Back onClick={() => back("welcome")}/><span>建立关系</span><i aria-hidden="true"/></header>
                 <div className="progress-line"><span/></div>
-                <section className="connect-copy"><p className="kicker">只差一步</p><h2>邀请 TA 加入<br/>你们的共同空间</h2><p>TA 需要亲自确认资料与隐私授权；接受邀请不等于同意照片下载或 AI 分析。</p></section>
-                <div className="invite-card"><span className="mini-label">我的邀请码</span><strong translate="no">LOVE 0520</strong><button className="invite-copy-button" onClick={async () => {try {await navigator.clipboard.writeText("LOVE 0520");notify("邀请码已复制");} catch {notify("复制失败，请长按邀请码手动复制");}}}>复制邀请码</button></div>
-                <div className="divider"><span>或者</span></div>
-                <button className="secondary-button" onClick={() => notify("已模拟扫码连接")}>▣ 扫描 TA 的二维码</button>
-                <div className="connect-visual"><div className="avatar a">{profile.name.slice(0,1)}</div><span>♥</span><div className="avatar b">{partnerProfile.name.slice(0,1)}</div></div>
-                <button className="primary-button sticky-button" onClick={() => go("relationshipReady")}>模拟 TA 已加入 <Arrow /></button>
+                <section className="connect-copy"><p className="kicker">真实关系绑定</p><h2>{onboardingIntent==="invite"?"邀请 TA 加入":"输入 TA 的邀请码"}<br/>你们的共同空间</h2><p>双方必须使用各自账号确认；邀请码 7 天有效，且只能成功使用一次。</p></section>
+                {onboardingIntent==="invite"&&<div className="invite-card"><span className="mini-label">我的邀请码</span><strong translate="no">{inviteCodeValue||"生成中…"}</strong><button className="invite-copy-button" disabled={!inviteCodeValue} onClick={async () => {try {await navigator.clipboard.writeText(inviteCodeValue);notify("邀请码已复制");} catch {notify("复制失败，请长按邀请码手动复制");}}}>复制邀请码</button></div>}
+                {onboardingIntent==="invite"&&<p className="waiting-partner" role="status">正在等待 TA 用自己的账号接受邀请…</p>}
+                <div className="divider"><span>{onboardingIntent==="invite"?"或者接受 TA 的邀请":"关系邀请码"}</span></div>
+                <label className="join-code-field">输入邀请码<input value={joinCode} onChange={e=>{setJoinCode(e.target.value.toUpperCase());setRelationshipError("");}} maxLength={12} autoComplete="one-time-code" placeholder="例如：8F3K2M7Q"/></label>
+                {relationshipError&&<p className="field-error" role="alert">{relationshipError}</p>}
+                <button className="primary-button connect-action" disabled={accountBusy||!joinCode.trim()} onClick={()=>void joinRelationship()}>{accountBusy?"正在确认…":"接受邀请并建立关系"} <Arrow/></button>
+                {onboardingIntent==="invite"&&<button className="ghost-button" disabled={accountBusy} onClick={()=>void createRelationshipInvite()}>重新生成邀请码</button>}
               </div>
             )}
 

@@ -107,3 +107,7 @@ html{overflow-x:hidden}body{overflow-x:hidden}button,a,input,textarea,summary{to
 .replace-place:disabled{color:var(--muted);opacity:.55;cursor:not-allowed}
 .phone .invite-card{height:auto;min-height:116px;align-items:flex-start;padding:19px}
 .phone .invite-card .invite-copy-button{position:static;width:auto;align-self:flex-start;margin-top:14px;padding:9px 16px;line-height:1.2;white-space:nowrap}
+.sign-in-button{text-decoration:none}.welcome-join{margin-top:8px}.account-link{display:block;margin-top:8px;color:var(--muted);font-size:11px;text-align:center;text-underline-offset:3px}
+.waiting-partner{margin:13px 2px 0;color:var(--muted);font-size:11px;line-height:1.55}.waiting-partner:before{content:"";display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:var(--rose);animation:pulse 1.6s ease-in-out infinite}
+.join-code-field{display:block;color:var(--muted);font-size:11px}.join-code-field input{display:block;width:100%;margin-top:8px;border:1px solid var(--line);border-radius:15px;background:white;padding:14px;font:inherit;font-size:15px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink)}
+.connect-action{margin-top:14px}.connect-page>.ghost-button{margin-top:7px}.invite-copy-button:disabled{opacity:.45;cursor:wait}

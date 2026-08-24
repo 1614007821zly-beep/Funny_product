@@ -25,16 +25,20 @@ test("server-renders the Love Diary V1.12 experience", async () => {
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
-  assert.match(html, /开始我们的故事/);
+  assert.match(html, /使用 ChatGPT 登录/);
   assert.doesNotMatch(html, /codex-preview|Building your site|react-loading-skeleton/i);
 });
 
 test("keeps accessibility and interaction safeguards in source", async () => {
-  const [page, css, layout, api] = await Promise.all([
+  const [page, css, layout, api, accountApi, inviteApi, joinApi, schema] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/inspiration/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/account/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/relationship/invite/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/relationship/join/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(layout, /className="skip-link"/);
@@ -68,5 +72,12 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(api, /RATE_LIMIT/);
   assert.match(api, /SENSITIVE_INPUT/);
   assert.match(page, /AI 密钥尚未配置，当前显示演示方案/);
+  assert.match(page, /\/signin-with-chatgpt\?return_to=/);
+  assert.match(page, /fetch\("\/api\/relationship\/join"/);
+  assert.match(accountApi, /getChatGPTUser/);
+  assert.match(inviteApi, /expiresAt/);
+  assert.match(joinApi, /env\.DB\.batch/);
+  assert.match(schema, /relationshipMembers/);
+  assert.match(schema, /relationshipInvites/);
   assert.doesNotMatch(page, /AIHUBMIX_API_KEY|AMAP_WEB_SERVICE_KEY/);
 });
