@@ -100,6 +100,11 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(releaseMigration, /WHERE `status` = 'ended'/);
   assert.match(page, /fetch\("\/api\/schedules"/);
   assert.match(page, /接受这个安排/);
+  assert.match(page, /TA 已发出邀请/);
+  assert.match(page, /scheduleDraft\.title \|\| currentPlan\.title/);
+  assert.match(page, /共同安排 · \$\{scheduleDraft\.city \|\| profile\.city\}/);
+  assert.match(page, /活动日期到来后，双方才能确认完成并生成基础回忆/);
+  assert.match(page, /setCompleted\(false\); setMyConfirmed\(false\); setTaConfirmed\(false\)/);
   assert.match(schedulesApi, /pending_partner/);
   assert.match(schedulesApi, /created_by_user_id === identity\.userId/);
   assert.match(schema, /sharedSchedules/);
