@@ -15,6 +15,13 @@
       "when": 1787593915874,
       "tag": "0001_silent_eternity",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787682000000,
+      "tag": "0002_release_ended_relationships",
+      "breakpoints": true
     }
   ]
 }
