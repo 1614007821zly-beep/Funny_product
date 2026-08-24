@@ -77,6 +77,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /input\.type = "text"/);
   assert.match(page, /BirthdayCalendar/);
   assert.match(page, /出生年份/);
+  assert.match(page, /cityOptions/);
+  assert.match(page, /CityPicker/);
+  assert.match(page, /搜索并选择城市/);
   assert.match(accountApi, /getChatGPTUser/);
   assert.match(inviteApi, /expiresAt/);
   assert.match(joinApi, /env\.DB\.batch/);
