@@ -140,7 +140,7 @@ export default function Home() {
       if (!response.ok) throw new Error("账号状态读取失败");
       setAccount(data);
       if (data.user) setProfile({ name: data.user.nickname, birthday: dateFieldValue(data.user.birthday), city: data.user.city });
-      if (data.invite?.code) setInviteCodeValue(data.invite.code);
+      setInviteCodeValue(data.invite?.code ?? "");
       if (data.relationship?.partner_id) {
         setPartnerProfile({ name: data.relationship.partner_name ?? "TA", birthday: data.relationship.partner_birthday ?? "" });
         setHasStarted(true);
@@ -212,7 +212,7 @@ export default function Home() {
     }
     setRelationshipExited(true); setSafetyExitUsed(safety);
     if (safety) setMemoryContentRetracted(true);
-    setHasStarted(false); setPanel(""); history.current=[]; go("relationshipArchive",true);
+    setInviteCodeValue(""); setJoinCode(""); setHasStarted(false); setPanel(""); history.current=[]; go("relationshipArchive",true);
   }
   function useCurrentLocation() {
     if (!navigator.geolocation) { notify("当前浏览器不支持定位，请填写商圈"); return; }
@@ -283,6 +283,16 @@ export default function Home() {
     return () => window.clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, account?.authenticated, account?.relationship?.partner_id]);
+
+  useEffect(() => {
+    if (!account?.authenticated || account.relationship?.partner_id || relationshipExited) return;
+    const relationshipRequired: Screen[] = ["home", "inspire", "loading", "results", "plan", "location", "confirm", "schedule", "calendar", "memory", "memories", "memoryCreate", "task", "taskHistory", "profile", "settings", "notifications", "privacy", "relationshipSafety", "important", "importantCreate"];
+    if (!relationshipRequired.includes(screen)) return;
+    // The server relationship snapshot is authoritative after an account switch or exit.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    go("connect", true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?.authenticated, account?.relationship?.partner_id, relationshipExited, screen]);
 
   useEffect(() => {
     const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="my-birthday"]'));
@@ -450,13 +460,13 @@ export default function Home() {
                 <header><Back onClick={() => back("welcome")}/><span>建立关系</span><i aria-hidden="true"/></header>
                 <div className="progress-line"><span/></div>
                 <section className="connect-copy"><p className="kicker">真实关系绑定</p><h2>{onboardingIntent==="invite"?"邀请 TA 加入":"输入 TA 的邀请码"}<br/>你们的共同空间</h2><p>双方必须使用各自账号确认；邀请码 7 天有效，且只能成功使用一次。</p></section>
-                {onboardingIntent==="invite"&&<div className="invite-card"><span className="mini-label">我的邀请码</span><strong translate="no">{inviteCodeValue||"生成中…"}</strong><button className="invite-copy-button" disabled={!inviteCodeValue} onClick={async () => {try {await navigator.clipboard.writeText(inviteCodeValue);notify("邀请码已复制");} catch {notify("复制失败，请长按邀请码手动复制");}}}>复制邀请码</button></div>}
-                {onboardingIntent==="invite"&&<p className="waiting-partner" role="status">正在等待 TA 用自己的账号接受邀请…</p>}
+                {onboardingIntent==="invite"&&<div className="invite-card"><span className="mini-label">我的邀请码</span><strong translate="no">{inviteCodeValue||"尚未生成"}</strong><button className="invite-copy-button" disabled={!inviteCodeValue} onClick={async () => {try {await navigator.clipboard.writeText(inviteCodeValue);notify("邀请码已复制");} catch {notify("复制失败，请长按邀请码手动复制");}}}>复制邀请码</button></div>}
+                {onboardingIntent==="invite"&&<p className="waiting-partner" role="status">{inviteCodeValue?"正在等待 TA 用自己的账号接受邀请…":"生成邀请码后，TA 可以在自己的账号中接受邀请。"}</p>}
                 <div className="divider"><span>{onboardingIntent==="invite"?"或者接受 TA 的邀请":"关系邀请码"}</span></div>
                 <label className="join-code-field">输入邀请码<input value={joinCode} onChange={e=>{setJoinCode(e.target.value.toUpperCase());setRelationshipError("");}} maxLength={12} autoComplete="one-time-code" placeholder="例如：8F3K2M7Q"/></label>
                 {relationshipError&&<p className="field-error" role="alert">{relationshipError}</p>}
                 <button className="primary-button connect-action" disabled={accountBusy||!joinCode.trim()} onClick={()=>void joinRelationship()}>{accountBusy?"正在确认…":"接受邀请并建立关系"} <Arrow/></button>
-                {onboardingIntent==="invite"&&<button className="ghost-button" disabled={accountBusy} onClick={()=>void createRelationshipInvite()}>重新生成邀请码</button>}
+                {onboardingIntent==="invite"&&<button className="ghost-button" disabled={accountBusy} onClick={()=>void createRelationshipInvite()}>{inviteCodeValue?"重新生成邀请码":"生成邀请码"}</button>}
               </div>
             )}
 
