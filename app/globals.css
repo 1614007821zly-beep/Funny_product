@@ -63,6 +63,7 @@ html{overflow-x:hidden}body{overflow-x:hidden}button,a,input,textarea,summary{to
 @media(max-width:460px){.page{padding-bottom:calc(110px + env(safe-area-inset-bottom))}.phone small{font-size:11px}.phone .kicker{font-size:11px}}
 .phone small,.phone .place-link em,.phone .replace-place,.phone .place-photo span,.phone .place-title>p:last-child,.phone .place-notice p,.phone .confirm-copy,.phone .confirm-card label,.phone .create-form label,.phone .link-context p,.phone .link-context em,.phone .idea-day p,.phone .idea-day button,.phone .similar-warning p,.phone .similar-warning button{font-size:11px}.prototype-shell h1,.phone h2,.phone h3{scroll-margin-top:72px}
 .field-error{color:#8f3f3f;background:#fae9e7;border-radius:12px;padding:10px 12px;font-size:12px;line-height:1.5;margin:10px 0}.confirm-card input:focus-visible,.create-form input:focus-visible,.create-form textarea:focus-visible{outline:3px solid #7f4a4a;outline-offset:3px;border-radius:8px}
+.ai-privacy-note{display:block;margin-top:9px;color:var(--muted);font-size:9px;font-weight:400;line-height:1.55}
 
 /* V1.8 · relationship safety, ownership and withdrawal */
 .safety-entry{margin-top:16px;padding:0 17px;display:flex;align-items:center;justify-content:space-between;color:var(--rose-dark)}
@@ -90,3 +91,4 @@ html{overflow-x:hidden}body{overflow-x:hidden}button,a,input,textarea,summary{to
 .event-card b,.date-block b,.relation-stats b,.calendar-page,.timeline-item>span,.detail-meta{font-variant-numeric:tabular-nums}
 .icon-button,.round-button,.month-switch button{min-width:44px;min-height:44px}
 .phone button,.phone a{position:relative}
+.map-link{display:flex;align-items:center;justify-content:center;text-decoration:none}

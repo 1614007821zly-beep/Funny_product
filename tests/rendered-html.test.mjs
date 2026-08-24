@@ -30,10 +30,11 @@ test("server-renders the Love Diary V1.8 experience", async () => {
 });
 
 test("keeps accessibility and interaction safeguards in source", async () => {
-  const [page, css, layout] = await Promise.all([
+  const [page, css, layout, api] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/inspiration/route.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(layout, /className="skip-link"/);
@@ -48,4 +49,17 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.doesNotMatch(css, /transition:\s*all/);
   assert.doesNotMatch(css, /outline:\s*(?:none|0)(?:[;}])/);
   assert.doesNotMatch(page, /modal-backdrop" onClick/);
+  assert.match(page, /fetch\("\/api\/inspiration"/);
+  assert.match(api, /process\.env\.AIHUBMIX_API_KEY/);
+  assert.match(api, /process\.env\.AMAP_WEB_SERVICE_KEY/);
+  assert.match(api, /aihubmix\.com\/v1\/chat\/completions/);
+  assert.match(api, /lfm-2\.5-2\.6b-free/);
+  assert.match(api, /response_format/);
+  assert.match(api, /while \(timeline\.length < 3\)/);
+  assert.match(api, /fetchWithNetworkRetry/);
+  assert.match(api, /restapi\.amap\.com\/v5\/place\/text/);
+  assert.match(api, /RATE_LIMIT/);
+  assert.match(api, /SENSITIVE_INPUT/);
+  assert.match(page, /AI 密钥尚未配置，当前显示演示方案/);
+  assert.doesNotMatch(page, /AIHUBMIX_API_KEY|AMAP_WEB_SERVICE_KEY/);
 });

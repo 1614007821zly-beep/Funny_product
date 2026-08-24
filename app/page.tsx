@@ -5,6 +5,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type Screen = "welcome" | "age" | "profileSetup" | "connect" | "relationshipReady" | "home" | "inspire" | "loading" | "results" | "plan" | "location" | "confirm" | "schedule" | "calendar" | "memory" | "memories" | "memoryCreate" | "task" | "taskHistory" | "profile" | "settings" | "notifications" | "privacy" | "relationshipSafety" | "relationshipArchive" | "important" | "importantCreate";
 type Tab = "home" | "inspire" | "calendar" | "settings";
 type Panel = "" | "edit" | "cancel" | "memoryEdit" | "retractMemory" | "deleteMemory" | "calendarAdd" | "profileEdit" | "cityEdit" | "normalExit" | "safetyExit" | "reportSafety" | "clearData";
+type Place = { id: string; name: string; address: string; location: string; type: string; verifiedBy: "amap" };
+type TimelineNode = { time: string; title: string; description: string };
+type Plan = { eyebrow: string; title: string; meta: string; desc: string; tone: string; duration?: string; timeline?: TimelineNode[]; place?: Place | null };
 
 const Arrow = () => <span aria-hidden="true">→</span>;
 const Back = ({ onClick }: { onClick: () => void }) => <button className="icon-button" onClick={onClick} aria-label="返回">‹</button>;
@@ -13,7 +16,7 @@ function Pill({ children, active, onClick }: { children: React.ReactNode; active
   return <button type="button" className={`pill ${active ? "active" : ""}`} aria-pressed={Boolean(active)} onClick={onClick}>{children}</button>;
 }
 
-const plans = [
+const plans: Plan[] = [
   { eyebrow: "主方案 · 松弛感", title: "晚风散步与河畔小酒馆", meta: "18:30–22:00 · 约 ¥260", desc: "先沿江慢慢走，把一周的疲惫留在晚风里；再去安静的小酒馆分享一份甜点。", tone: "primary" },
   { eyebrow: "备选 · 不赶时间", title: "老街慢逛与深夜食堂", meta: "19:00–22:30 · 约 ¥180", desc: "随意走走，去收藏很久的小店吃顿热乎的晚餐。", tone: "cream" },
   { eyebrow: "备选 · 室内", title: "双人陶艺与晚餐", meta: "18:00–21:30 · 约 ¥320", desc: "一起完成一件小作品，把今晚留成以后能触摸的记忆。", tone: "lilac" },
@@ -66,12 +69,17 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [clock, setClock] = useState("--:--");
   const [reportReason, setReportReason] = useState("");
-  const dynamicPlans = useMemo(() => plans.map((plan, index) => ({
+  const [aiPlans, setAiPlans] = useState<Plan[] | null>(null);
+  const [generationError, setGenerationError] = useState("");
+  const requestController = useRef<AbortController | null>(null);
+  const dynamicPlans = useMemo(() => (aiPlans ?? plans).map((plan, index) => ({
     ...plan,
-    title: choices.space === "室内" ? ["独立书店与安静晚餐", "双人陶艺与甜品", "小剧场与夜宵"][index] : choices.mood === "想热闹" ? ["夜市寻味与现场音乐", "双人保龄球与夜宵", "城市夜游与甜品"][index] : plan.title,
+    title: aiPlans ? plan.title : choices.space === "室内" ? ["独立书店与安静晚餐", "双人陶艺与甜品", "小剧场与夜宵"][index] : choices.mood === "想热闹" ? ["夜市寻味与现场音乐", "双人保龄球与夜宵", "城市夜游与甜品"][index] : plan.title,
     meta: `${choices.time} · ${choices.budget}`,
-  })), [choices]);
+  })), [aiPlans, choices]);
   const currentPlan = dynamicPlans[selectedPlan];
+  const currentPlace = currentPlan.place ?? null;
+  const amapMapUrl = currentPlace ? `https://uri.amap.com/marker?position=${encodeURIComponent(currentPlace.location)}&name=${encodeURIComponent(currentPlace.name)}&src=love-diary&coordinate=gaode&callnative=0` : "";
   const eventDate = useMemo(() => new Date(2026, 7, 8), []);
   const eventDateLong = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" }).format(eventDate);
   const eventMonthDay = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric" }).format(eventDate);
@@ -93,13 +101,38 @@ export default function Home() {
 
   const step = useMemo(() => ({ welcome: 0, age: 0, profileSetup: 0, connect: 1, relationshipReady: 1, home: 2, inspire: 3, loading: 3, results: 4, plan: 5, location: 5, confirm: 5, schedule: 6, calendar: 7, memory: 8, memories: 8, memoryCreate: 8, task: 2, taskHistory: 2, profile: 2, settings: 2, notifications: 2, privacy: 2, relationshipSafety: 2, relationshipArchive: 2, important: 2, importantCreate: 2 }[screen]), [screen]);
 
-  function go(next: Screen, replace = false) { if (screen === "loading" && next !== "results" && generationTimer.current) { window.clearTimeout(generationTimer.current); generationTimer.current = null; } if (!replace) history.current.push(screen); const method = replace ? "replaceState" : "pushState"; window.history[method]({ screen: next }, "", `#${next}`); setScreen(next); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function go(next: Screen, replace = false) { if (screen === "loading" && next !== "results") { if (generationTimer.current) { window.clearTimeout(generationTimer.current); generationTimer.current = null; } requestController.current?.abort(); } if (!replace) history.current.push(screen); const method = replace ? "replaceState" : "pushState"; window.history[method]({ screen: next }, "", `#${next}`); setScreen(next); window.scrollTo({ top: 0, behavior: "smooth" }); }
   function back(fallback: Screen = "home") { const previous = history.current.pop(); if (previous) window.history.back(); else go(fallback, true); }
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 1800); }
-  function generate(shouldFail = false) {
-    if (generationTimer.current) window.clearTimeout(generationTimer.current);
-    setLoadingFailed(shouldFail); go("loading");
-    if (!shouldFail) { setHasGenerated(true); generationTimer.current = window.setTimeout(() => { generationTimer.current = null; go("results"); }, 1500); }
+  async function generate(shouldFail = false) {
+    requestController.current?.abort();
+    if (shouldFail) { setGenerationError("这是手动触发的失败状态预览。"); setLoadingFailed(true); go("loading"); return; }
+    const controller = new AbortController();
+    requestController.current = controller;
+    setGenerationError(""); setLoadingFailed(false); go("loading");
+    try {
+      const response = await fetch("/api/inspiration", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ city: profile.city, moods: myStates, partnerMood: choices.taMood, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special }),
+        signal: controller.signal,
+      });
+      const data = await response.json() as { plans?: Array<{ title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; place?: Place | null }>; error?: string; code?: string };
+      if (data.code === "AI_NOT_CONFIGURED") {
+        setAiPlans(null); setSelectedPlan(0); setHasGenerated(true); go("results");
+        notify("AI 密钥尚未配置，当前显示演示方案");
+        return;
+      }
+      if (!response.ok || !data.plans) throw new Error(data.error || "灵感暂时没有生成成功。");
+      setAiPlans(data.plans.map((plan, index) => ({ eyebrow: index === 0 ? "主方案 · AI 实时生成" : "备选 · AI 实时生成", title: plan.title, meta: `${choices.time} · ${plan.budgetLabel}`, desc: plan.summary, tone: ["primary", "cream", "lilac"][index] ?? "cream", duration: plan.duration, timeline: plan.timeline, place: plan.place })));
+      setSelectedPlan(0); setHasGenerated(true); go("results");
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setGenerationError(error instanceof Error ? error.message : "灵感暂时没有生成成功。");
+      setLoadingFailed(true);
+    } finally {
+      if (requestController.current === controller) requestController.current = null;
+    }
   }
   function resetJourney() {
     setAdopted(false); setPartnerAccepted(false); setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); setCancelled(false); setTaskLinked(false); setTaskDone(false); setMemoryDeleted(false); go("home");
@@ -170,7 +203,7 @@ export default function Home() {
     return () => { document.removeEventListener("keydown", handleModalKeys); backgroundRegions.forEach(region => { region.inert = false; region.removeAttribute("aria-hidden"); }); };
   }, [panel]);
 
-  useEffect(() => () => { if (generationTimer.current) window.clearTimeout(generationTimer.current); }, []);
+  useEffect(() => () => { if (generationTimer.current) window.clearTimeout(generationTimer.current); requestController.current?.abort(); }, []);
 
   function nav(tab: Tab) {
     if (tab === "home") go("home");
@@ -261,38 +294,38 @@ export default function Home() {
                 <Choice title="时间" options={["现在出发", "今晚", "周末", "暂不确定"]} value={choices.time} setValue={(time) => setChoices({...choices, time})}/>
                 <Choice title="预算" options={["¥100以内", "¥100–300", "¥300+"]} value={choices.budget} setValue={(budget) => setChoices({...choices, budget})}/>
                 <Choice title="活动空间" options={["都可以", "室内", "户外"]} value={choices.space} setValue={(space) => setChoices({...choices, space})}/>
-                <label className="special-request">还有什么需要照顾？<input name="special-requirements" autoComplete="off" value={choices.special} onChange={e=>setChoices({...choices,special:e.target.value})} placeholder="例如：不想走太多路（选填）…"/></label>
-                <div className="sticky-cta"><button className="primary-button" onClick={() => generate(false)}>获取 3 个灵感 <span>✦</span></button><button className="failure-link" onClick={() => generate(true)}>预览生成失败状态</button></div>
+                <label className="special-request">还有什么需要照顾？<input name="special-requirements" autoComplete="off" value={choices.special} onChange={e=>setChoices({...choices,special:e.target.value})} placeholder="例如：不想走太多路（选填）…"/><small className="ai-privacy-note">生成时仅发送本页条件给第三方 AI 服务 AIHubMix。请勿填写姓名、手机号、邮箱或其他私密内容。</small></label>
+                <div className="sticky-cta"><button className="primary-button" onClick={() => generate(false)}>获取 3 个灵感 <span>✦</span></button></div>
                 {bottomNav("inspire")}
               </div>
             )}
 
             {screen === "loading" && (
-              <div className="page loading-page"><header><Back onClick={() => back("inspire")}/><span>正在寻找灵感</span><i aria-hidden="true"/></header>{loadingFailed ? <div className="error-state"><div className="state-symbol" aria-hidden="true">↻</div><p className="kicker">暂时走神了</p><h2>灵感没有生成成功</h2><p>网络有一点拥挤，你刚才选择的条件都还在，不需要重新填写。</p><button className="primary-button" onClick={() => generate(false)}>再试一次 <Arrow/></button><button className="ghost-button" onClick={() => go("inspire")}>返回修改条件</button></div> : <div className="ai-loading" role="status" aria-live="polite"><div className="loading-orbit" aria-hidden="true"><span>✦</span></div><p className="kicker">读懂你们此刻的心情</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配你们的状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>通常只需要几秒钟</p></div>}</div>
+              <div className="page loading-page"><header><Back onClick={() => back("inspire")}/><span>正在寻找灵感</span><i aria-hidden="true"/></header>{loadingFailed ? <div className="error-state"><div className="state-symbol" aria-hidden="true">↻</div><p className="kicker">暂时走神了</p><h2>灵感没有生成成功</h2><p>{generationError || "网络有一点拥挤，你刚才选择的条件都还在，不需要重新填写。"}</p><button className="primary-button" onClick={() => generate(false)}>再试一次 <Arrow/></button><button className="ghost-button" onClick={() => go("inspire")}>返回修改条件</button></div> : <div className="ai-loading" role="status" aria-live="polite"><div className="loading-orbit" aria-hidden="true"><span>✦</span></div><p className="kicker">读懂你们此刻的心情</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配你们的状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>通常只需要几秒钟</p></div>}</div>
             )}
 
             {screen === "results" && (
               <div className="page result-page">
                 <header><Back onClick={() => back("inspire")}/><span>为你们想到的</span><button className="text-button" onClick={() => go("inspire")}>调整条件</button></header>
                 <div className="result-intro"><p className="kicker">{profile.city} · {choices.time} · {choices.mood} · {choices.budget}</p><h2>{choices.space === "室内" ? <>留在室内，<br/>也能认真约会。</> : <>不赶时间，<br/>也不辜负今晚。</>}</h2></div>
-                <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => setSelectedPlan(0)}><div className="plan-top"><span>主灵感 · 根据条件生成</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · {choices.budget} · {choices.space}</p><p>{dynamicPlans[0].desc}</p><span className="prep-note">已照顾：{choices.special || "暂无特殊要求"}</span></button><div className="alternative-title"><b>也可以试试</b><button onClick={() => {setSelectedPlan((selectedPlan+1)%3);notify("已将下一方案设为主方案");}}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => setSelectedPlan(i)}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p></div><i aria-hidden="true">›</i></button>})}</div>
+                <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => setSelectedPlan(0)}><div className="plan-top"><span>主灵感 · {aiPlans ? "AI 实时生成" : "演示方案"}</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · {choices.budget} · {choices.space}</p><p>{dynamicPlans[0].desc}</p><span className="prep-note">已照顾：{choices.special || "暂无特殊要求"}</span></button><div className="alternative-title"><b>也可以试试</b><button onClick={() => {setSelectedPlan((selectedPlan+1)%3);notify("已将下一方案设为主方案");}}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => setSelectedPlan(i)}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p></div><i aria-hidden="true">›</i></button>})}</div>
                 <div className="sticky-cta"><button className="primary-button" onClick={() => go("plan")}>查看详细计划 <Arrow /></button></div>
               </div>
             )}
 
             {screen === "plan" && (
               <div className="page detail-page">
-                <div className="detail-hero"><header><Back onClick={() => back("results")}/><span>AI 详细计划</span><button className="icon-button" onClick={() => notify("计划链接已准备好")} aria-label="分享计划">↗</button></header><p className="kicker">候选方案 · 尚未进入日历</p><h2>{currentPlan.title}</h2><p className="plan-summary">先慢慢走一段路，再到附近吃晚餐。路线顺，不需要赶时间。</p><div className="detail-meta"><span>{profile.city} · {choices.time}</span><span>约 3.5 小时</span><span>{choices.budget}</span></div></div>
-                <section className="timeline"><p className="kicker">今晚的节奏</p>{[
-                  ["18:30", "在地铁口见面", "不用赶，先买两杯喜欢的饮料"], ["19:00", "沿江慢慢散步", "推荐路线 2.3 km · 约 45 分钟"], ["20:00", "河畔小酒馆", "靠窗位 · 分享甜点与低度酒"], ["21:40", "一起回家", "今晚留一个问题给彼此"]
-                ].map(([time, title, desc], i) => <div className="timeline-item" key={time}><span>{time}</span><i>{i + 1}</i><div>{i === 2 ? <button className="place-link" onClick={() => go("location")}><b>{placeVersion ? "桂雨小馆" : title}</b><em>查看地点 ›</em></button> : <b>{title}</b>}<p>{i === 2 && placeVersion ? "安静内庭 · 分享晚餐与甜点" : desc}</p>{i === 2 && <button className="replace-place" onClick={() => {setPlaceVersion(v=>v+1);notify("只替换了当前地点，其他节点未改变");}}>换一个地点</button>}</div></div>)}</section>
-                <section className="execution-info"><p className="kicker">执行信息</p><div><span>预约</span><b>演示建议 · 尚未联网核验</b></div><div><span>交通</span><b>演示路线约 3.2 km</b></div><div><span>天气</span><b>尚未接入实时天气</b></div><div><span>预算</span><b>{choices.budget} / 两人</b></div></section>
+                <div className="detail-hero"><header><Back onClick={() => back("results")}/><span>AI 详细计划</span><button className="icon-button" onClick={() => notify("计划链接已准备好")} aria-label="分享计划">↗</button></header><p className="kicker">候选方案 · 尚未进入日历</p><h2>{currentPlan.title}</h2><p className="plan-summary">{currentPlan.desc}</p><div className="detail-meta"><span>{profile.city} · {choices.time}</span><span>{currentPlan.duration || "约 3.5 小时"}</span><span>{choices.budget}</span></div></div>
+                <section className="timeline"><p className="kicker">今晚的节奏</p>{(currentPlan.timeline ?? [
+                  { time: "18:30", title: "在地铁口见面", description: "不用赶，先买两杯喜欢的饮料" }, { time: "19:00", title: "沿江慢慢散步", description: "推荐路线 2.3 km · 约 45 分钟" }, { time: "20:00", title: "河畔小酒馆", description: "靠窗位 · 分享甜点与低度酒" }, { time: "21:40", title: "一起回家", description: "今晚留一个问题给彼此" }
+                ]).map((node, i) => <div className="timeline-item" key={`${node.time}-${node.title}`}><span>{node.time}</span><i>{i + 1}</i><div>{i === 2 ? <button className="place-link" onClick={() => go("location")}><b>{currentPlace?.name || node.title}</b><em>查看地点 ›</em></button> : <b>{node.title}</b>}<p>{node.description}</p>{i === 2 && <button className="replace-place" onClick={() => {setPlaceVersion(v=>v+1);notify("重新生成灵感可以获取其他真实地点");}}>换一个地点</button>}</div></div>)}</section>
+                <section className="execution-info"><p className="kicker">执行信息</p><div><span>地点</span><b>{currentPlace ? "高德地图已匹配" : "AI 建议 · 尚未核验"}</b></div><div><span>交通</span><b>打开高德地图后查看实时路线</b></div><div><span>天气</span><b>尚未接入实时天气</b></div><div><span>预算</span><b>{choices.budget} / 两人</b></div></section>
                 <section className="warm-note"><span>♡</span><p><b>一个小提示</b><br/>把手机收起来十分钟，问问对方：最近有什么小事让你开心？</p></section>
                 <div className="sticky-cta"><button className="primary-button" onClick={() => go("confirm")}>采用这个安排 <Arrow /></button><p>下一步确认日期与时间；确认前不会进入日历</p></div>
               </div>
             )}
 
-            {screen === "location" && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span><button className="icon-button" onClick={() => notify("地图能力尚未接入")} aria-label="在地图中打开地点">↗</button></header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>原型地点示意 · 未联网核验</span></div><section className="place-title"><p className="kicker">营业状态尚未联网核验</p><h2>{placeVersion ? "桂雨小馆" : "河畔小酒馆"}</h2><p>上城区之江路 118 号 · 演示路线距上一节点步行约 12 分钟</p></section><section className="info-group"><InfoRow label="计划时段" value="20:00–21:40 · 待核验"/><InfoRow label="营业时间" value="演示数据：17:00–00:30"/><InfoRow label="价格范围" value="演示预算：两人约 ¥180–260"/><InfoRow label="预约" value="建议出发前自行确认"/><InfoRow label="地点信息" value="原型演示数据"/></section><section className="place-notice"><b>执行提示</b><p>真实地点、营业时间与路线需要接入地图服务后核验；当前可返回计划只替换这个演示地点。</p></section><button className="primary-button" onClick={() => notify("地图能力尚未接入")}>在地图中查看 <Arrow/></button><button className="ghost-button" onClick={() => {setPlaceVersion(v=>v+1);go("plan");}}>换一个地点</button></div>}
+            {screen === "location" && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span>{currentPlace ? <a className="icon-button" href={amapMapUrl} target="_blank" rel="noreferrer" aria-label="在高德地图中打开地点">↗</a> : <button className="icon-button" onClick={() => notify("本方案尚未匹配到真实地点")} aria-label="地点尚未匹配">↗</button>}</header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>{currentPlace ? "高德地图地点数据" : "AI 地点建议 · 未核验"}</span></div><section className="place-title"><p className="kicker">{currentPlace ? "真实地点已匹配 · 营业信息请出发前确认" : "尚未匹配到真实地点"}</p><h2>{currentPlace?.name || currentPlan.title}</h2><p>{currentPlace?.address || `请在${profile.city}重新生成或更换搜索条件`}</p></section><section className="info-group"><InfoRow label="计划时段" value="以最终安排为准"/><InfoRow label="地点类型" value={currentPlace?.type || "AI 建议"}/><InfoRow label="坐标" value={currentPlace?.location || "尚未获取"}/><InfoRow label="营业时间" value="高德地点搜索未提供，需另行确认"/><InfoRow label="地点来源" value={currentPlace ? "高德地图 Web 服务" : "AIHubMix 建议"}/></section><section className="place-notice"><b>执行提示</b><p>{currentPlace ? "地点名称、地址和坐标来自高德地图；营业状态、排队情况与价格可能变化，请出发前确认。" : "AI 不会编造具体商家。重新生成后，系统会尝试用高德地图匹配真实地点。"}</p></section>{currentPlace ? <a className="primary-button map-link" href={amapMapUrl} target="_blank" rel="noreferrer">在高德地图中查看 <Arrow/></a> : <button className="primary-button" onClick={() => {go("inspire");notify("请调整关键词后重新生成");}}>返回调整条件 <Arrow/></button>}<button className="ghost-button" onClick={() => {setSelectedPlan((selectedPlan+1)%3);go("plan");}}>查看另一个方案</button></div>}
 
             {screen === "confirm" && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>确认安排</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>发给 TA，<br/>一起决定。</h2><p className="confirm-copy">你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”，不会被当作双方已确定的事实。</p></section><section className="confirm-card"><label>安排名称<input name="schedule-title" autoComplete="off" defaultValue={currentPlan.title}/></label><label>日期<input name="schedule-date" type="date" autoComplete="off" defaultValue="2026-08-08"/></label><label>开始时间<input name="schedule-time" type="time" autoComplete="off" defaultValue="18:30"/></label><label>所在城市<input name="schedule-city" autoComplete="address-level2" defaultValue={profile.city}/></label></section>{taskAccepted && <section className="link-context"><span>♫</span><div><b>关联情侣任务</b><p>交换一首最近常听的歌</p></div><em>TA 接受后关联</em></section>}<button className="primary-button" onClick={() => {setAdopted(true);setPartnerAccepted(false);setTaskLinked(taskAccepted);go("schedule");}}>发给 TA 确认 <Arrow/></button><button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
 
