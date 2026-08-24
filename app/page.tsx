@@ -267,6 +267,17 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const refreshAccount = () => { if (document.visibilityState === "visible") void loadAccount(true); };
+    window.addEventListener("focus", refreshAccount);
+    document.addEventListener("visibilitychange", refreshAccount);
+    return () => {
+      window.removeEventListener("focus", refreshAccount);
+      document.removeEventListener("visibilitychange", refreshAccount);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     if (screen !== "connect" || !account?.authenticated || account.relationship?.partner_id) return;
     const timer = window.setInterval(() => void loadAccount(true), 5000);
     return () => window.clearInterval(timer);
@@ -300,6 +311,15 @@ export default function Home() {
     });
     return () => inputs.forEach(input => input.removeEventListener("click", openPicker));
   }, [screen, panel]);
+
+  useEffect(() => {
+    const fields = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="partner-name"], input[name="partner-birthday"]'));
+    fields.forEach(field => {
+      field.tabIndex = -1;
+      field.classList.add("readonly-profile-input");
+      field.setAttribute("aria-readonly", "true");
+    });
+  }, [panel]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("love-diary-v112") ?? window.localStorage.getItem("love-diary-v17") ?? window.localStorage.getItem("love-diary-v16") ?? window.localStorage.getItem("love-diary-v15") ?? window.localStorage.getItem("love-diary-v14");

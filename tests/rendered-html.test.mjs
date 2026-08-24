@@ -82,6 +82,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /cityOptions/);
   assert.match(page, /CityPicker/);
   assert.match(page, /搜索并选择城市/);
+  assert.match(page, /visibilitychange/);
+  assert.match(page, /readonly-profile-input/);
+  assert.match(css, /label:has\(\.readonly-profile-input\)/);
   assert.match(accountApi, /getChatGPTUser/);
   assert.match(inviteApi, /expiresAt/);
   assert.match(joinApi, /env\.DB\.batch/);
