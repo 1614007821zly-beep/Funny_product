@@ -138,7 +138,7 @@ export default function Home() {
         setPartnerProfile({ name: data.relationship.partner_name ?? "TA", birthday: data.relationship.partner_birthday ?? "" });
         setHasStarted(true);
         if (screen === "connect") go("relationshipReady", true);
-      }
+      } else setHasStarted(false);
       return data;
     } catch {
       if (!silent) setRelationshipError("暂时无法连接账号服务，请稍后重试。");
