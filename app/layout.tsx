@@ -2,16 +2,19 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "恋爱日记 V1.8 · 安全关系高保真原型",
-  description: "恋爱日记 V1.8：关系安全退出、内容撤回、共同归档与 AI 隐私控制完整体验。",
+  metadataBase: new URL("https://love-diary-v1-prototype.linyu518.chatgpt.site"),
+  title: "恋爱日记 V1.12 · 共同生活体验",
+  description: "恋爱日记 V1.12：从真实地点灵感、共同安排到回忆记录的完整体验。",
   themeColor: "#fbfaf8",
   icons: { icon: "/favicon.svg" },
   openGraph: {
-    title: "恋爱日记 V1.8 · 正式体验版",
+    title: "恋爱日记 V1.12 · 共同生活体验",
     description: "关系、灵感、共同安排、回忆与数据安全，一条完整可点击体验。",
+    siteName: "恋爱日记",
+    url: "/",
     images: [{ url: "/og.png", width: 1200, height: 630, alt: "恋爱日记高保真原型" }],
   },
-  twitter: { card: "summary_large_image", images: ["/og.png"] },
+  twitter: { card: "summary_large_image", title: "恋爱日记 V1.12 · 共同生活体验", description: "从真实地点灵感、共同安排到回忆记录的完整体验。", images: ["/og.png"] },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

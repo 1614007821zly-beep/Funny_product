@@ -213,7 +213,11 @@ function stringValue(value: unknown) { return typeof value === "string" ? value 
 function objectValue(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function finiteNumber(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
 function clampNumber(value: unknown, min: number, max: number, fallback: number) { const number = finiteNumber(value); return number ? Math.min(max, Math.max(min, number)) : fallback; }
-function numberValue(value: unknown) { const number = Number(value); return Number.isFinite(number) ? number : null; }
+function numberValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
 function validCoordinates(longitude: number, latitude: number) { return longitude >= 73 && longitude <= 136 && latitude >= 3 && latitude <= 54; }
 function normalizePlaceKeyword(value: string) { const categories = ["公园", "咖啡馆", "餐厅", "书店", "博物馆", "美术馆", "电影院", "商场", "酒吧", "甜品店", "夜市", "景区", "剧院", "陶艺馆"]; return categories.find(category => value.includes(category)) ?? clean(value, 20); }
 function json(body: unknown, status = 200) { return Response.json(body, { status, headers: { "cache-control": "no-store" } }); }

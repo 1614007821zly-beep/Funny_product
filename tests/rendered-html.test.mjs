@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V1.8 experience", async () => {
+test("server-renders the Love Diary V1.12 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V1\.8/);
+  assert.match(html, /<title>恋爱日记 V1\.12/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -62,6 +62,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(api, /sortrule/);
   assert.match(page, /navigator\.geolocation/);
   assert.match(page, /PlaceCandidates/);
+  assert.match(page, /isEventMonth&&d===eventDate\.getDate\(\)&&adopted/);
+  assert.match(page, /距离待定位/);
+  assert.match(api, /value === null \|\| value === undefined \|\| value === ""/);
   assert.match(api, /RATE_LIMIT/);
   assert.match(api, /SENSITIVE_INPUT/);
   assert.match(page, /AI 密钥尚未配置，当前显示演示方案/);
