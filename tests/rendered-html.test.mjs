@@ -114,6 +114,11 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(schedulesApi, /body\.action === "cancel"/);
   assert.match(schedulesApi, /status='cancelled'/);
   assert.match(page, /cancelCurrentSchedule/);
+  assert.match(page, /monthOffsetFromToday/);
+  assert.match(page, /onClick=\{jumpToToday\}>今日/);
+  assert.match(page, /isToday\?"today":""/);
+  assert.match(page, /title: currentPlan\.title/);
+  assert.match(page, /确定删除这个计划/);
   assert.match(schedulesApi, /created_by_user_id === identity\.userId/);
   assert.match(schema, /sharedSchedules/);
   assert.match(scheduleMigration, /CREATE TABLE `shared_schedules`/);
