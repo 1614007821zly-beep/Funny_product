@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V1.12 experience", async () => {
+test("server-renders the Love Diary V1.13 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V1\.12/);
+  assert.match(html, /<title>恋爱日记 V1\.13/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -100,9 +100,14 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(releaseMigration, /WHERE `status` = 'ended'/);
   assert.match(page, /fetch\("\/api\/schedules"/);
   assert.match(page, /接受这个安排/);
+  assert.match(page, /先自己体验/);
+  assert.match(page, /保存到我的计划/);
+  assert.match(page, /我的计划 · 仅自己可见/);
+  assert.match(page, /个人计划不会自动共享/);
+  assert.match(page, /love-diary-solo-user/);
   assert.match(page, /TA 已发出邀请/);
   assert.match(page, /scheduleDraft\.title \|\| currentPlan\.title/);
-  assert.match(page, /共同安排 · \$\{scheduleDraft\.city \|\| profile\.city\}/);
+  assert.match(page, /hasRelationship\?"共同安排":"仅自己可见"/);
   assert.match(page, /活动日期到来后，双方才能确认完成并生成基础回忆/);
   assert.match(page, /setCompleted\(false\); setMyConfirmed\(false\); setTaConfirmed\(false\)/);
   assert.match(schedulesApi, /pending_partner/);
