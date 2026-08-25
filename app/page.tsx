@@ -71,7 +71,7 @@ export default function Home() {
   const [completed, setCompleted] = useState(false);
   const [myConfirmed, setMyConfirmed] = useState(false);
   const [taConfirmed, setTaConfirmed] = useState(false);
-  const [cancelled, setCancelled] = useState(false);
+  const [cancelled, setCancelledState] = useState(false);
   const [panel, setPanel] = useState<Panel>("");
   const [loadingFailed, setLoadingFailed] = useState(false);
   const [hasGenerated, setHasGenerated] = useState(false);
@@ -210,6 +210,20 @@ export default function Home() {
       if (!response.ok || !data.schedule) throw new Error(data.error || "接受安排失败。");
       setSharedSchedule(data.schedule); setPartnerAccepted(true); setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); notify("安排已接受，双方共同日历已同步");
     } catch (error) { notify(error instanceof Error ? error.message : "接受安排失败。"); }
+    finally { setScheduleBusy(false); }
+  }
+  function setCancelled(value: boolean) { if (value) void cancelCurrentSchedule(); else setCancelledState(false); }
+  async function cancelCurrentSchedule() {
+    if (!hasRelationship || !sharedSchedule) {
+      setAdopted(false); setCancelled(false); setPanel(""); notify("个人计划已删除"); go("home"); return;
+    }
+    setScheduleBusy(true);
+    try {
+      const response = await fetch("/api/schedules", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: sharedSchedule.id, action: "cancel" }) });
+      const data = await response.json() as { schedule?: SharedSchedule; error?: string };
+      if (!response.ok || !data.schedule) throw new Error(data.error || "取消安排失败。");
+      setSharedSchedule(null); setAdopted(false); setPartnerAccepted(false); setCancelled(false); setPanel(""); notify("安排已取消并从首页移除"); go("home");
+    } catch (error) { notify(error instanceof Error ? error.message : "取消安排失败。"); }
     finally { setScheduleBusy(false); }
   }
   function savePersonalPlan() {

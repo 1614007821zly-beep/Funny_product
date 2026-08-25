@@ -111,6 +111,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /活动日期到来后，双方才能确认完成并生成基础回忆/);
   assert.match(page, /setCompleted\(false\); setMyConfirmed\(false\); setTaConfirmed\(false\)/);
   assert.match(schedulesApi, /pending_partner/);
+  assert.match(schedulesApi, /body\.action === "cancel"/);
+  assert.match(schedulesApi, /status='cancelled'/);
+  assert.match(page, /cancelCurrentSchedule/);
   assert.match(schedulesApi, /created_by_user_id === identity\.userId/);
   assert.match(schema, /sharedSchedules/);
   assert.match(scheduleMigration, /CREATE TABLE `shared_schedules`/);

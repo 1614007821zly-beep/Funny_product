@@ -3,7 +3,7 @@ import { getChatGPTUser } from "../../chatgpt-auth";
 
 export const dynamic = "force-dynamic";
 
-type ScheduleInput = { title?: string; eventDate?: string; eventTime?: string; city?: string; id?: string; action?: "accept" };
+type ScheduleInput = { title?: string; eventDate?: string; eventTime?: string; city?: string; id?: string; action?: "accept" | "cancel" };
 
 async function activeRelationship(userId: string) {
   return env.DB.prepare(`SELECT m.relationship_id FROM relationship_members m
@@ -44,9 +44,16 @@ export async function PATCH(request: Request) {
   const membership = await activeRelationship(identity.userId);
   if (!membership) return Response.json({ error: "当前没有有效关系。" }, { status: 409 });
   const body = await request.json() as ScheduleInput;
-  if (!body.id || body.action !== "accept") return Response.json({ error: "不支持的操作。" }, { status: 400 });
+  if (!body.id || !["accept", "cancel"].includes(body.action ?? "")) return Response.json({ error: "不支持的操作。" }, { status: 400 });
   const schedule = await env.DB.prepare("SELECT created_by_user_id,status FROM shared_schedules WHERE id=? AND relationship_id=?").bind(body.id,membership.relationship_id).first<{ created_by_user_id: string; status: string }>();
   if (!schedule) return Response.json({ error: "安排不存在。" }, { status: 404 });
+  if (body.action === "cancel") {
+    if (schedule.status === "cancelled") return Response.json({ error: "安排已经取消。" }, { status: 409 });
+    const now = new Date().toISOString();
+    await env.DB.prepare("UPDATE shared_schedules SET status='cancelled',updated_at=? WHERE id=? AND relationship_id=?").bind(now,body.id,membership.relationship_id).run();
+    const updated = await env.DB.prepare("SELECT * FROM shared_schedules WHERE id=?").bind(body.id).first();
+    return Response.json({ schedule: updated });
+  }
   if (schedule.created_by_user_id === identity.userId) return Response.json({ error: "需要由 TA 接受这个安排。" }, { status: 400 });
   if (schedule.status !== "pending_partner") return Response.json({ error: "安排状态已经更新。" }, { status: 409 });
   const now = new Date().toISOString();
