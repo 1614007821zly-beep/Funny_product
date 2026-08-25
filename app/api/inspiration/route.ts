@@ -76,7 +76,7 @@ export async function POST(request: Request) {
 }
 
 async function generatePlans(apiKey: string, input: Required<InspirationRequest>): Promise<GeneratedPlan[]> {
-  const prompt = [
+  const promptLines = [
     "你是情侣共同生活规划助手。请生成3个安全、现实、不过度浪漫化的约会灵感。",
     "返回 JSON：plans 正好3项；每项包含 title、summary、duration、budgetLabel、placeQuery、timeline；timeline 正好3项，每项包含 time、title、description。",
     "placeQuery 只能填写一个标准地点类别词：公园、咖啡馆、餐厅、书店、博物馆、美术馆、电影院、商场、酒吧、甜品店、夜市、景区、剧院、陶艺馆。",
@@ -91,8 +91,9 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
     `空间：${input.space}`,
     `优先商圈：${input.district || "未指定"}`,
     `搜索范围：${Math.round(input.radius / 1000)}公里`,
-    `特殊要求：${input.special || "无"}`,
-  ].join("\n");
+  ];
+  if (input.special) promptLines.push(`需要特别照顾：${input.special}`);
+  const prompt = promptLines.join("\n");
 
   const response = await fetchWithNetworkRetry("https://aihubmix.com/v1/chat/completions", {
     method: "POST",

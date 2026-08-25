@@ -119,6 +119,12 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /isToday\?"today":""/);
   assert.match(page, /title: currentPlan\.title/);
   assert.match(page, /确定删除这个计划/);
+  assert.match(page, /choices\.special\.trim\(\)&&<span className="prep-note">特别照顾/);
+  assert.match(page, /留空时不会出现在灵感方案中/);
+  assert.match(api, /if \(input\.special\) promptLines\.push/);
+  assert.doesNotMatch(api, /特殊要求：\$\{input\.special \|\| "无"\}/);
+  assert.match(css, /one visible focus surface per compound field/);
+  assert.match(css, /button\.idea\.selected-day:after\{display:none\}/);
   assert.match(schedulesApi, /created_by_user_id === identity\.userId/);
   assert.match(schema, /sharedSchedules/);
   assert.match(scheduleMigration, /CREATE TABLE `shared_schedules`/);
