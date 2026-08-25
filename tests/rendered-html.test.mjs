@@ -82,7 +82,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(api, /ai_service_state/);
   assert.match(api, /AI_CIRCUIT_OPEN/);
   assert.match(api, /SENSITIVE_INPUT/);
-  assert.match(page, /AI 密钥尚未配置，当前显示演示方案/);
+  assert.match(page, /AI 尚未配置，当前显示备用方案/);
   assert.match(page, /\/signin-with-chatgpt\?return_to=/);
   assert.match(page, /fetch\("\/api\/relationship\/join"/);
   assert.match(page, /input\.type = "text"/);
@@ -120,12 +120,15 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(schedulesApi, /pending_partner/);
   assert.match(schedulesApi, /body\.action === "cancel"/);
   assert.match(schedulesApi, /body\.action === "delete"/);
+  assert.match(schedulesApi, /body\.action === "update"/);
   assert.match(schedulesApi, /visibility === "shared"/);
   assert.match(schedulesApi, /legacy_import/);
   assert.match(schedulesApi, /source_reference/);
   assert.match(schedulesApi, /version=version\+1/);
   assert.match(schedulesApi, /status='cancelled'/);
   assert.match(page, /cancelCurrentSchedule/);
+  assert.match(page, /saveScheduleEdits/);
+  assert.match(page, /city: profile\.city/);
   assert.match(page, /monthOffsetFromToday/);
   assert.match(page, /onClick=\{jumpToToday\}>今日/);
   assert.match(page, /isToday\?"today":""/);
@@ -150,6 +153,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.doesNotMatch(page, /new URLSearchParams/);
   assert.doesNotMatch(page, /window\.localStorage\.setItem\("love-diary-v112"/);
   assert.match(page, /旧计划不会自动恢复/);
+  assert.match(page, /AI 服务暂时繁忙，已切换为可继续编辑的备用方案/);
+  assert.match(page, /hasRelationship&&<><label>TA 的昵称/);
+  assert.match(css, /@media\(max-width:960px\)/);
   assert.match(page, /onClick=\{\(\)=>void saveProfileEdits\(\)\}/);
   assert.match(page, /重置演示状态（保留已保存计划）/);
   assert.match(schema, /relationshipMembers/);

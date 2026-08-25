@@ -3,7 +3,7 @@ import { getChatGPTUser, type ChatGPTUser } from "../../chatgpt-auth";
 
 export const dynamic = "force-dynamic";
 
-type ScheduleAction = "accept" | "cancel" | "delete";
+type ScheduleAction = "accept" | "cancel" | "delete" | "update";
 type ScheduleVisibility = "personal" | "shared";
 type ScheduleSource = "manual" | "ai" | "legacy_import";
 type ScheduleInput = {
@@ -135,7 +135,7 @@ export async function PATCH(request: Request) {
   } catch {
     return json({ error: "请求内容不是有效的 JSON。" }, 400);
   }
-  if (!body.id || !["accept", "cancel", "delete"].includes(body.action ?? "")) {
+  if (!body.id || !["accept", "cancel", "delete", "update"].includes(body.action ?? "")) {
     return json({ error: "不支持的操作。" }, 400);
   }
 
@@ -147,6 +147,27 @@ export async function PATCH(request: Request) {
   if (!ownsPersonal && !belongsToRelationship) return json({ error: "你无权操作这个安排。" }, 403);
 
   const now = new Date().toISOString();
+  if (body.action === "update") {
+    const title = clean(body.title, 80);
+    const eventDate = clean(body.eventDate, 10);
+    const eventTime = clean(body.eventTime, 5);
+    const city = clean(body.city, 40);
+    if (!title || !validDate(eventDate) || !validTime(eventTime) || !city) {
+      return json({ error: "请完整填写有效的安排名称、日期、时间和城市。" }, 400);
+    }
+    if (schedule.visibility === "shared" && schedule.created_by_user_id !== identity.userId) {
+      return json({ error: "共同安排只能由发起人修改。" }, 403);
+    }
+    const status = schedule.visibility === "shared" ? "pending_partner" : "active";
+    const result = await env.DB.prepare(`UPDATE schedules SET title=?,event_date=?,event_time=?,city=?,status=?,
+      accepted_by_user_id=CASE WHEN visibility='shared' THEN NULL ELSE accepted_by_user_id END,
+      updated_at=?,version=version+1 WHERE id=? AND version=? AND deleted_at IS NULL`)
+      .bind(title, eventDate, eventTime, city, status, now, schedule.id, schedule.version).run();
+    if (!result.meta.changes) return json({ error: "安排刚刚已被更新，请刷新后重试。" }, 409);
+    const updated = await env.DB.prepare(`${scheduleColumns()} FROM schedules WHERE id=?`).bind(schedule.id).first<StoredSchedule>();
+    return json({ schedule: updated });
+  }
+
   if (body.action === "delete") {
     if (!ownsPersonal) return json({ error: "共同安排只能取消，不能由单方删除。" }, 400);
     const result = await env.DB.prepare(`UPDATE schedules SET status='deleted',deleted_at=?,updated_at=?,version=version+1
