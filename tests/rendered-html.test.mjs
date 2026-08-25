@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V1.13 experience", async () => {
+test("server-renders the Love Diary V1.14 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V1\.13/);
+  assert.match(html, /<title>恋爱日记 V1\.14/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -30,7 +30,7 @@ test("server-renders the Love Diary V1.13 experience", async () => {
 });
 
 test("keeps accessibility and interaction safeguards in source", async () => {
-  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, schedulesApi, schema, releaseMigration, scheduleMigration] = await Promise.all([
+  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, schedulesApi, schema, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -43,6 +43,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0002_release_ended_relationships.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0003_rainy_saracen.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0004_fuzzy_beyonder.sql", import.meta.url), "utf8"),
   ]);
 
   assert.match(layout, /className="skip-link"/);
@@ -74,6 +75,12 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /距离待定位/);
   assert.match(api, /value === null \|\| value === undefined \|\| value === ""/);
   assert.match(api, /RATE_LIMIT/);
+  assert.match(api, /getChatGPTUser/);
+  assert.match(api, /AUTH_REQUIRED/);
+  assert.match(api, /ai_usage_limits/);
+  assert.match(api, /DAILY_LIMIT/);
+  assert.match(api, /ai_service_state/);
+  assert.match(api, /AI_CIRCUIT_OPEN/);
   assert.match(api, /SENSITIVE_INPUT/);
   assert.match(page, /AI 密钥尚未配置，当前显示演示方案/);
   assert.match(page, /\/signin-with-chatgpt\?return_to=/);
@@ -107,11 +114,16 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /love-diary-solo-user/);
   assert.match(page, /TA 已发出邀请/);
   assert.match(page, /scheduleDraft\.title \|\| currentPlan\.title/);
-  assert.match(page, /hasRelationship\?"共同安排":"仅自己可见"/);
+  assert.match(page, /scheduleIsShared\?"共同安排":"仅自己可见"/);
   assert.match(page, /活动日期到来后，双方才能确认完成并生成基础回忆/);
   assert.match(page, /setCompleted\(false\); setMyConfirmed\(false\); setTaConfirmed\(false\)/);
   assert.match(schedulesApi, /pending_partner/);
   assert.match(schedulesApi, /body\.action === "cancel"/);
+  assert.match(schedulesApi, /body\.action === "delete"/);
+  assert.match(schedulesApi, /visibility === "shared"/);
+  assert.match(schedulesApi, /legacy_import/);
+  assert.match(schedulesApi, /source_reference/);
+  assert.match(schedulesApi, /version=version\+1/);
   assert.match(schedulesApi, /status='cancelled'/);
   assert.match(page, /cancelCurrentSchedule/);
   assert.match(page, /monthOffsetFromToday/);
@@ -127,7 +139,19 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(css, /button\.idea\.selected-day:after\{display:none\}/);
   assert.match(schedulesApi, /created_by_user_id === identity\.userId/);
   assert.match(schema, /sharedSchedules/);
-  assert.match(scheduleMigration, /CREATE TABLE `shared_schedules`/);
+  assert.match(schema, /export const schedules/);
+  assert.match(schema, /aiUsageLimits/);
+  assert.match(sharedScheduleMigration, /CREATE TABLE `shared_schedules`/);
+  assert.match(unifiedScheduleMigration, /CREATE TABLE `schedules`/);
+  assert.match(unifiedScheduleMigration, /INSERT OR IGNORE INTO `schedules`/);
+  assert.match(unifiedScheduleMigration, /FROM `shared_schedules`/);
+  assert.match(page, /window\.sessionStorage\.setItem\(INSPIRATION_DRAFT_KEY/);
+  assert.match(page, /window\.history\.replaceState\(\{ screen: initialScreen \}, "", `#\$\{initialScreen\}`\)/);
+  assert.doesNotMatch(page, /new URLSearchParams/);
+  assert.doesNotMatch(page, /window\.localStorage\.setItem\("love-diary-v112"/);
+  assert.match(page, /旧计划不会自动恢复/);
+  assert.match(page, /onClick=\{\(\)=>void saveProfileEdits\(\)\}/);
+  assert.match(page, /重置演示状态（保留已保存计划）/);
   assert.match(schema, /relationshipMembers/);
   assert.match(schema, /relationshipInvites/);
   assert.doesNotMatch(page, /AIHUBMIX_API_KEY|AMAP_WEB_SERVICE_KEY/);

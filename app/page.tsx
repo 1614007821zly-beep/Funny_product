@@ -9,7 +9,11 @@ type Place = { id: string; name: string; address: string; location: string; type
 type TimelineNode = { time: string; title: string; description: string };
 type Plan = { eyebrow: string; title: string; meta: string; desc: string; tone: string; duration?: string; timeline?: TimelineNode[]; places?: Place[] };
 type AccountSnapshot = { authenticated: boolean; user?: { id: string; email: string; nickname: string; birthday: string | null; city: string }; relationship?: { id: string; status: string; partner_id: string | null; partner_name: string | null; partner_birthday: string | null } | null; invite?: { code: string; partner_note: string | null; expires_at: string; status: string } | null };
-type SharedSchedule = { id: string; relationship_id: string; created_by_user_id: string; accepted_by_user_id: string | null; title: string; event_date: string; event_time: string; city: string; status: "pending_partner" | "confirmed" | "cancelled"; created_at: string; updated_at: string };
+type ScheduleRecord = { id: string; relationship_id: string | null; created_by_user_id: string; accepted_by_user_id: string | null; visibility: "personal" | "shared"; title: string; event_date: string; event_time: string; city: string; status: "active" | "pending_partner" | "confirmed" | "cancelled" | "deleted"; source: "manual" | "ai" | "legacy_import" | "legacy_shared"; version: number; created_at: string; updated_at: string; deleted_at: string | null };
+type LegacyPlan = { title: string; date: string; time: string; city: string };
+
+const LEGACY_STORAGE_KEYS = ["love-diary-v112", "love-diary-v17", "love-diary-v16", "love-diary-v15", "love-diary-v14"];
+const INSPIRATION_DRAFT_KEY = "love-diary-inspiration-draft-v1";
 
 const Arrow = () => <span aria-hidden="true">→</span>;
 const Back = ({ onClick }: { onClick: () => void }) => <button className="icon-button" onClick={onClick} aria-label="返回">‹</button>;
@@ -47,8 +51,9 @@ export default function Home() {
   const [profileError, setProfileError] = useState("");
   const [account, setAccount] = useState<AccountSnapshot | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
-  const [sharedSchedule, setSharedSchedule] = useState<SharedSchedule | null>(null);
+  const [sharedSchedule, setSharedSchedule] = useState<ScheduleRecord | null>(null);
   const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [legacyPlan, setLegacyPlan] = useState<LegacyPlan | null>(null);
   const [onboardingIntent, setOnboardingIntent] = useState<"solo" | "invite" | "join">("solo");
   const [soloMode, setSoloMode] = useState(false);
   const [inviteCodeValue, setInviteCodeValue] = useState("");
@@ -64,7 +69,6 @@ export default function Home() {
   const [importantDraft, setImportantDraft] = useState(() => ({ title: "在一起纪念日", date: dateInputValue(63) }));
   const [meetingPlace, setMeetingPlace] = useState("近江地铁站 B 口");
   const [formError, setFormError] = useState("");
-  const [hasStarted, setHasStarted] = useState(false);
   const [importantAdded, setImportantAdded] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState(0);
   const [adopted, setAdopted] = useState(false);
@@ -115,6 +119,7 @@ export default function Home() {
   const today = useMemo(() => { const value = new Date(); value.setHours(0, 0, 0, 0); return value; }, []);
   const canConfirmCompletion = eventDate.getTime() <= today.getTime();
   const isScheduleCreator = Boolean(sharedSchedule && account?.user?.id && sharedSchedule.created_by_user_id === account.user.id);
+  const scheduleIsShared = sharedSchedule ? sharedSchedule.visibility === "shared" : hasRelationship;
   const eventDateLong = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" }).format(eventDate);
   const eventMonthDay = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric" }).format(eventDate);
   const eventWeekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(eventDate);
@@ -149,7 +154,7 @@ export default function Home() {
     try {
       const response = await fetch("/api/account", { cache: "no-store" });
       const data = await response.json() as AccountSnapshot;
-      if (response.status === 401) { setAccount({ authenticated: false }); setSharedSchedule(null); return null; }
+      if (response.status === 401) { setAccount({ authenticated: false }); setSharedSchedule(null); setAdopted(false); return null; }
       if (!response.ok) throw new Error("账号状态读取失败");
       setAccount(data);
       if (data.user) setProfile({ name: data.user.nickname, birthday: dateFieldValue(data.user.birthday), city: data.user.city });
@@ -157,9 +162,8 @@ export default function Home() {
       if (data.relationship?.partner_id) {
         window.localStorage.removeItem("love-diary-solo-user"); setSoloMode(false);
         setPartnerProfile({ name: data.relationship.partner_name ?? "TA", birthday: data.relationship.partner_birthday ?? "" });
-        setHasStarted(true);
         if (screen === "connect") go("relationshipReady", true);
-      } else { setHasStarted(false); setSharedSchedule(null); setSoloMode(window.localStorage.getItem("love-diary-solo-user") === data.user?.id); }
+      } else { setSoloMode(window.localStorage.getItem("love-diary-solo-user") === data.user?.id); }
       return data;
     } catch {
       if (!silent) setRelationshipError("暂时无法连接账号服务，请稍后重试。");
@@ -181,8 +185,8 @@ export default function Home() {
     try {
       const response = await fetch("/api/schedules", { cache: "no-store" });
       if (response.status === 401) return;
-      const data = await response.json() as { schedule?: SharedSchedule | null; error?: string };
-      if (!response.ok) throw new Error(data.error || "共同安排读取失败。");
+      const data = await response.json() as { schedule?: ScheduleRecord | null; error?: string };
+      if (!response.ok) throw new Error(data.error || "安排读取失败。");
       const schedule = data.schedule ?? null;
       setSharedSchedule(schedule);
       if (schedule) {
@@ -191,15 +195,15 @@ export default function Home() {
         setAdopted(true); setPartnerAccepted(schedule.status === "confirmed"); setCancelled(schedule.status === "cancelled");
         setCompleted(false); setMyConfirmed(false); setTaConfirmed(false);
       } else if (account?.authenticated) { setAdopted(false); setPartnerAccepted(false); }
-    } catch { if (!silent) notify("共同安排同步失败，请稍后重试"); }
+    } catch { if (!silent) notify("安排同步失败，请稍后重试"); }
   }
   async function createSharedSchedule() {
     const title = (scheduleDraft.title || currentPlan.title).trim(); const city = (scheduleDraft.city || profile.city).trim();
     if (!title || !scheduleDraft.date || !scheduleDraft.time || !city) { setFormError("请完整填写安排名称、日期、时间和城市。"); return; }
     setScheduleBusy(true); setFormError("");
     try {
-      const response = await fetch("/api/schedules", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, eventDate: scheduleDraft.date, eventTime: scheduleDraft.time, city }) });
-      const data = await response.json() as { schedule?: SharedSchedule; error?: string };
+      const response = await fetch("/api/schedules", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, eventDate: scheduleDraft.date, eventTime: scheduleDraft.time, city, visibility: "shared", source: aiPlans ? "ai" : "manual" }) });
+      const data = await response.json() as { schedule?: ScheduleRecord; error?: string };
       if (!response.ok || !data.schedule) throw new Error(data.error || "安排发送失败。");
       setSharedSchedule(data.schedule); setScheduleDraft({ title, date: scheduleDraft.date, time: scheduleDraft.time, city });
       showDateInCalendar(localDate(scheduleDraft.date)); setAdopted(true); setPartnerAccepted(false); setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); setTaskLinked(taskAccepted); go("schedule");
@@ -211,7 +215,7 @@ export default function Home() {
     setScheduleBusy(true);
     try {
       const response = await fetch("/api/schedules", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: sharedSchedule.id, action: "accept" }) });
-      const data = await response.json() as { schedule?: SharedSchedule; error?: string };
+      const data = await response.json() as { schedule?: ScheduleRecord; error?: string };
       if (!response.ok || !data.schedule) throw new Error(data.error || "接受安排失败。");
       setSharedSchedule(data.schedule); setPartnerAccepted(true); setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); notify("安排已接受，双方共同日历已同步");
     } catch (error) { notify(error instanceof Error ? error.message : "接受安排失败。"); }
@@ -219,24 +223,40 @@ export default function Home() {
   }
   function setCancelled(value: boolean) { if (value) void cancelCurrentSchedule(); else setCancelledState(false); }
   async function cancelCurrentSchedule() {
-    if (!hasRelationship || !sharedSchedule) {
-      setAdopted(false); setCancelled(false); setPanel(""); notify("个人计划已删除"); go("home"); return;
-    }
+    if (!sharedSchedule) { notify("当前没有可删除的计划"); setPanel(""); return; }
     setScheduleBusy(true);
     try {
-      const response = await fetch("/api/schedules", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: sharedSchedule.id, action: "cancel" }) });
-      const data = await response.json() as { schedule?: SharedSchedule; error?: string };
-      if (!response.ok || !data.schedule) throw new Error(data.error || "取消安排失败。");
-      setSharedSchedule(null); setAdopted(false); setPartnerAccepted(false); setCancelled(false); setPanel(""); notify("安排已取消并从首页移除"); go("home");
-    } catch (error) { notify(error instanceof Error ? error.message : "取消安排失败。"); }
+      const action = sharedSchedule.visibility === "shared" ? "cancel" : "delete";
+      const response = await fetch("/api/schedules", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: sharedSchedule.id, action }) });
+      const data = await response.json() as { schedule?: ScheduleRecord | null; error?: string };
+      if (!response.ok) throw new Error(data.error || (action === "delete" ? "删除计划失败。" : "取消安排失败。"));
+      setSharedSchedule(null); setAdopted(false); setPartnerAccepted(false); setCancelled(false); setPanel(""); notify(action === "delete" ? "个人计划已删除" : "安排已取消并从首页移除");
+      await loadSharedSchedule(true); go("home");
+    } catch (error) { notify(error instanceof Error ? error.message : "安排更新失败。"); }
     finally { setScheduleBusy(false); }
   }
-  function savePersonalPlan() {
-    const title = (scheduleDraft.title || currentPlan.title).trim(); const city = (scheduleDraft.city || profile.city).trim();
-    if (!title || !scheduleDraft.date || !scheduleDraft.time || !city) { setFormError("请完整填写安排名称、日期、时间和城市。"); return; }
-    setSharedSchedule(null); setScheduleDraft({ title, date: scheduleDraft.date, time: scheduleDraft.time, city });
-    showDateInCalendar(localDate(scheduleDraft.date)); setAdopted(true); setPartnerAccepted(false);
-    setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); notify("已保存到我的计划"); go("calendar");
+  async function savePersonalPlan(source: "manual" | "ai" | "legacy_import" = aiPlans ? "ai" : "manual", plan: LegacyPlan | null = null) {
+    const next = plan ?? { title: scheduleDraft.title || currentPlan.title, date: scheduleDraft.date, time: scheduleDraft.time, city: scheduleDraft.city || profile.city };
+    const title = next.title.trim(); const city = next.city.trim();
+    if (!title || !next.date || !next.time || !city) { setFormError("请完整填写安排名称、日期、时间和城市。"); return; }
+    setScheduleBusy(true); setFormError("");
+    try {
+      const response = await fetch("/api/schedules", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, eventDate: next.date, eventTime: next.time, city, visibility: "personal", source }) });
+      const data = await response.json() as { schedule?: ScheduleRecord; error?: string };
+      if (!response.ok || !data.schedule) throw new Error(data.error || "个人计划保存失败。");
+      setSharedSchedule(data.schedule); setScheduleDraft({ title, date: next.date, time: next.time, city });
+      showDateInCalendar(localDate(next.date)); setAdopted(true); setPartnerAccepted(false);
+      setCompleted(false); setMyConfirmed(false); setTaConfirmed(false);
+      if (source === "legacy_import") {
+        const backup = LEGACY_STORAGE_KEYS.map(key => window.localStorage.getItem(key)).find(Boolean);
+        if (backup) window.localStorage.setItem("love-diary-legacy-backup", backup);
+        LEGACY_STORAGE_KEYS.forEach(key => window.localStorage.removeItem(key));
+        window.localStorage.setItem("love-diary-legacy-plan-migrated", "1");
+        setLegacyPlan(null);
+      }
+      notify(source === "legacy_import" ? "旧计划已安全导入" : "已保存到我的计划"); go("calendar");
+    } catch (error) { setFormError(error instanceof Error ? error.message : "个人计划保存失败。"); }
+    finally { setScheduleBusy(false); }
   }
   async function saveProfileAndContinue() {
     if (!profile.name.trim() || (onboardingIntent === "invite" && !partnerProfile.name.trim())) { setProfileError("请填写昵称和邀请称呼后继续。"); window.requestAnimationFrame(()=>profileErrorRef.current?.focus()); return; }
@@ -258,6 +278,7 @@ export default function Home() {
     finally { setAccountBusy(false); }
   }
   async function saveSelectedCity(city: string) {
+    const previousCity = account?.user?.city ?? profile.city;
     setProfile(current => ({ ...current, city }));
     if (!account?.authenticated) { notify("城市已更新"); return; }
     try {
@@ -265,7 +286,21 @@ export default function Home() {
       const data = await response.json() as AccountSnapshot & { error?: string };
       if (!response.ok) throw new Error(data.error || "城市同步失败。");
       setAccount(data); notify("城市已更新并同步到账户");
-    } catch { notify("城市已在本机更新，账户同步暂时失败"); }
+    } catch { setProfile(current => ({ ...current, city: previousCity })); notify("城市保存失败，已恢复账户中的城市"); }
+  }
+  async function saveProfileEdits() {
+    if (!profile.name.trim()) { notify("请先填写昵称"); return; }
+    setAccountBusy(true);
+    try {
+      const response = await fetch("/api/account", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nickname: profile.name, birthday: profile.birthday, city: profile.city }) });
+      const data = await response.json() as AccountSnapshot & { error?: string };
+      if (!response.ok || !data.user) throw new Error(data.error || "资料保存失败。");
+      setAccount(data); setProfile({ name: data.user.nickname, birthday: dateFieldValue(data.user.birthday), city: data.user.city });
+      setPanel(""); notify("我的资料已保存到账户");
+    } catch (error) {
+      if (account?.user) setProfile({ name: account.user.nickname, birthday: dateFieldValue(account.user.birthday), city: account.user.city });
+      notify(error instanceof Error ? error.message : "资料保存失败。");
+    } finally { setAccountBusy(false); }
   }
   async function joinRelationship() {
     setAccountBusy(true); setRelationshipError("");
@@ -284,7 +319,7 @@ export default function Home() {
         const response = await fetch("/api/relationship/leave", { method: "POST" });
         const data = await response.json() as { ok?: boolean; error?: string };
         if (!response.ok || !data.ok) throw new Error(data.error || "退出关系失败。");
-        await loadAccount(true);
+        await loadAccount(true); await loadSharedSchedule(true);
       } catch (error) {
         setRelationshipError(error instanceof Error ? error.message : "退出关系失败。");
         notify("暂时无法退出关系，请稍后重试");
@@ -295,7 +330,7 @@ export default function Home() {
     }
     setRelationshipExited(true); setSafetyExitUsed(safety);
     if (safety) setMemoryContentRetracted(true);
-    setInviteCodeValue(""); setJoinCode(""); setHasStarted(false); setPanel(""); history.current=[]; go("relationshipArchive",true);
+    setInviteCodeValue(""); setJoinCode(""); setPanel(""); history.current=[]; go("relationshipArchive",true);
   }
   function useCurrentLocation() {
     if (!navigator.geolocation) { notify("当前浏览器不支持定位，请填写商圈"); return; }
@@ -339,7 +374,16 @@ export default function Home() {
     }
   }
   function resetJourney() {
-    setAdopted(false); setPartnerAccepted(false); setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); setCancelled(false); setTaskLinked(false); setTaskDone(false); setMemoryDeleted(false); go("home");
+    setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); setTaskLinked(false); setTaskDone(false); setMemoryDeleted(false); void loadSharedSchedule(true); go("home");
+  }
+  function clearLocalSession() {
+    window.sessionStorage.removeItem(INSPIRATION_DRAFT_KEY);
+    LEGACY_STORAGE_KEYS.forEach(key => window.localStorage.removeItem(key));
+    ["love-diary-legacy-backup", "love-diary-legacy-plan-migrated", "love-diary-legacy-plan-dismissed", "love-diary-solo-user"].forEach(key => window.localStorage.removeItem(key));
+    setChoices({ mood: "想放松", taMood: "和我一样", vibe: "安静", time: "今晚", budget: "¥100–300", space: "都可以", special: "" });
+    setMyStates(["想放松"]); setCustomStates([]); setLocationPrefs({ district: "", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
+    setLegacyPlan(null); setSoloMode(false); setAiPlans(null); setHasGenerated(false); setCompleted(false); setTaskAccepted(false); setTaskLinked(false); setMemoryCreated(false); setMemoryContentRetracted(false); setRelationshipExited(false); setSafetyExitUsed(false); setImportantAdded(false); setPanel("");
+    history.current = []; void loadSharedSchedule(true); go("welcome", true);
   }
 
   useEffect(() => {
@@ -361,11 +405,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!account?.authenticated || !account.relationship?.partner_id) return;
+    if (!account?.authenticated) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadSharedSchedule(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account?.authenticated, account?.relationship?.id, account?.relationship?.partner_id]);
+  }, [account?.authenticated, account?.relationship?.id]);
 
   useEffect(() => {
     if (screen !== "connect" || !account?.authenticated || account.relationship?.partner_id) return;
@@ -422,18 +466,31 @@ export default function Home() {
   }, [panel]);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("love-diary-v112") ?? window.localStorage.getItem("love-diary-v17") ?? window.localStorage.getItem("love-diary-v16") ?? window.localStorage.getItem("love-diary-v15") ?? window.localStorage.getItem("love-diary-v14");
-    if (!saved) return;
+    const savedDraft = window.sessionStorage.getItem(INSPIRATION_DRAFT_KEY);
+    if (savedDraft) {
+      try {
+        const data = JSON.parse(savedDraft) as { choices?: typeof choices; myStates?: string[]; customStates?: string[]; district?: string; radius?: number };
+        // Session storage only keeps this tab's unfinished inspiration form.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        if (data.choices) setChoices(current => ({ ...current, ...data.choices, special: data.choices?.special ?? "" }));
+        if (Array.isArray(data.myStates)) setMyStates(data.myStates.slice(0, 2));
+        if (Array.isArray(data.customStates)) setCustomStates(data.customStates.slice(0, 12));
+        if (typeof data.district === "string" || [3000, 5000, 10000].includes(data.radius ?? 0)) {
+          setLocationPrefs(current => ({ ...current, district: data.district?.slice(0, 40) ?? "", radius: [3000, 5000, 10000].includes(data.radius ?? 0) ? data.radius! : current.radius }));
+        }
+      } catch { window.sessionStorage.removeItem(INSPIRATION_DRAFT_KEY); }
+    }
+
+    if (window.localStorage.getItem("love-diary-legacy-plan-migrated") || window.localStorage.getItem("love-diary-legacy-plan-dismissed")) return;
+    const legacySnapshot = LEGACY_STORAGE_KEYS.map(key => window.localStorage.getItem(key)).find(Boolean);
+    if (!legacySnapshot) return;
     try {
-      const data = JSON.parse(saved);
-      // Hydrate the local-only prototype from a previously committed browser snapshot.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setProfile(data.profile ?? profile); setPartnerProfile(data.partnerProfile ?? partnerProfile); setChoices(data.choices ?? choices); setMyStates(data.myStates ?? [data.choices?.mood ?? "想放松"]); setCustomStates(data.customStates ?? []); setScheduleDraft(data.scheduleDraft ?? scheduleDraft); setAdopted(Boolean(data.adopted));
-      setPartnerAccepted(Boolean(data.partnerAccepted)); setHasGenerated(Boolean(data.hasGenerated)); setCompleted(Boolean(data.completed)); setTaskAccepted(Boolean(data.taskAccepted)); setTaskLinked(Boolean(data.taskLinked));
-      setMemoryCreated(Boolean(data.memoryCreated)); setImportantAdded(Boolean(data.importantAdded)); setHasStarted(Boolean(data.hasStarted));
-      setMemoryContentRetracted(Boolean(data.memoryContentRetracted)); setRelationshipExited(Boolean(data.relationshipExited)); setSafetyExitUsed(Boolean(data.safetyExitUsed));
-    } catch { /* Ignore damaged local demo data. */ }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+      const data = JSON.parse(legacySnapshot) as { adopted?: boolean; scheduleDraft?: Partial<LegacyPlan> };
+      const draft = data.scheduleDraft;
+      if (data.adopted && draft?.title?.trim() && /^\d{4}-\d{2}-\d{2}$/.test(draft.date ?? "") && /^\d{2}:\d{2}$/.test(draft.time ?? "") && draft.city?.trim()) {
+        setLegacyPlan({ title: draft.title.trim(), date: draft.date!, time: draft.time!, city: draft.city.trim() });
+      }
+    } catch { /* Damaged legacy snapshots are ignored, never auto-imported. */ }
   }, []);
 
   useEffect(() => {
@@ -445,16 +502,15 @@ export default function Home() {
 
   useEffect(() => {
     const initial = window.location.hash.slice(1) as Screen;
-    const query = new URLSearchParams(window.location.search);
-    const sharedChoices = { mood: query.get("mood"), taMood: query.get("taMood"), vibe: query.get("vibe"), time: query.get("time"), budget: query.get("budget"), space: query.get("space"), special: query.get("special") };
-    // URL state is the source of truth for a directly opened shared inspiration link.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (Object.values(sharedChoices).some(Boolean)) setChoices(current => ({ ...current, ...Object.fromEntries(Object.entries(sharedChoices).filter(([, value]) => value !== null)) }));
-    const sharedRadius = Number(query.get("radius"));
-    if (query.get("district") || [3000, 5000, 10000].includes(sharedRadius)) setLocationPrefs(current => ({ ...current, district: query.get("district") ?? current.district, radius: [3000, 5000, 10000].includes(sharedRadius) ? sharedRadius : current.radius }));
-    // The hash is the prototype's lightweight route source on first load.
-    if (initial) setScreen(initial);
-    else window.history.replaceState({ screen }, "", `#${screen}`);
+    const initialScreen = initial || screen;
+    // Old versions exposed form content in the query string. Strip it before
+    // rendering and keep only the non-sensitive screen hash.
+    if (window.location.search) {
+      window.location.replace(`${window.location.pathname}#${initialScreen}`);
+      return;
+    }
+    window.history.replaceState({ screen: initialScreen }, "", `#${initialScreen}`);
+    if (initial) window.queueMicrotask(() => setScreen(initial));
     const onPopState = (event: PopStateEvent) => {
       const next = (event.state?.screen ?? window.location.hash.slice(1) ?? "home") as Screen;
       setScreen(next);
@@ -466,14 +522,8 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!["inspire", "loading", "results", "plan", "location"].includes(screen)) return;
-    const query = new URLSearchParams({ ...choices, district: locationPrefs.district, radius: String(locationPrefs.radius) });
-    window.history.replaceState({ screen }, "", `?${query.toString()}#${screen}`);
-  }, [screen, choices, locationPrefs.district, locationPrefs.radius]);
-
-  useEffect(() => {
-    window.localStorage.setItem("love-diary-v112", JSON.stringify({ profile, partnerProfile, choices, myStates, customStates, scheduleDraft, adopted, partnerAccepted, hasGenerated, completed, taskAccepted, taskLinked, memoryCreated, importantAdded, hasStarted, memoryContentRetracted, relationshipExited, safetyExitUsed }));
-  }, [profile, partnerProfile, choices, myStates, customStates, scheduleDraft, adopted, partnerAccepted, hasGenerated, completed, taskAccepted, taskLinked, memoryCreated, importantAdded, hasStarted, memoryContentRetracted, relationshipExited, safetyExitUsed]);
+    window.sessionStorage.setItem(INSPIRATION_DRAFT_KEY, JSON.stringify({ choices, myStates, customStates, district: locationPrefs.district, radius: locationPrefs.radius }));
+  }, [choices, myStates, customStates, locationPrefs.district, locationPrefs.radius]);
 
   useEffect(() => {
     const backgroundRegions = Array.from(document.querySelectorAll<HTMLElement>(".prototype-notes, .phone-stage"));
@@ -519,13 +569,13 @@ export default function Home() {
     <main className="prototype-shell" id="main-content">
       <aside className="prototype-notes">
         <div className="brand-mark">日</div>
-        <p className="kicker">恋爱日记 · V1.13 单人及共同体验</p>
+        <p className="kicker">恋爱日记 · V1.14 数据与安全重构</p>
         <h1>把一起生活的<br/>小事，好好留下。</h1>
         <p className="intro">从一个轻松的约会灵感开始，经过双方确认，成为共同安排，最后自然沉淀为回忆。</p>
         <ol className="journey" aria-label="体验流程">
           {["相遇", "我们", "灵感", "计划", "安排", "日历", "回忆"].map((label, i) => <li key={label} className={step >= i + 1 ? "done" : ""} aria-current={step === i + 1 ? "step" : undefined}><i aria-hidden="true">{step > i + 1 ? "✓" : i + 1}</i><span>{label}</span></li>)}
         </ol>
-        <p className="hint">V1.13 支持先单人体验，再按意愿邀请 TA 建立共同空间。</p>
+        <p className="hint">V1.14 由账户安全同步资料与安排，灵感条件仅保留在当前会话。</p>
       </aside>
 
       <section className="phone-stage">
@@ -560,7 +610,7 @@ export default function Home() {
               </div>
             )}
 
-            {screen === "relationshipReady" && <div className="page formal-page onboarding-page relationship-ready"><header><Back onClick={()=>back("connect")}/><span>关系已建立</span><i aria-hidden="true"/></header><div className="success-symbol">♡</div><section className="page-intro"><p className="kicker">双方已分别确认</p><h2>{profile.name} 与{partnerProfile.name}，<br/>从今天开始记录。</h2><p className="confirm-copy">TA 已自行确认昵称；双方内容会标记来源，任何一方都可以独立退出并撤回自己的敏感内容。</p></section><button className="primary-button" onClick={()=>{setRelationshipExited(false);setHasStarted(true);go("home",true);}}>进入「我们」 <Arrow/></button><button className="ghost-button" onClick={()=>notify("通知权限可稍后在设置中开启")}>暂不开启通知</button></div>}
+            {screen === "relationshipReady" && <div className="page formal-page onboarding-page relationship-ready"><header><Back onClick={()=>back("connect")}/><span>关系已建立</span><i aria-hidden="true"/></header><div className="success-symbol">♡</div><section className="page-intro"><p className="kicker">双方已分别确认</p><h2>{profile.name} 与{partnerProfile.name}，<br/>从今天开始记录。</h2><p className="confirm-copy">TA 已自行确认昵称；双方内容会标记来源，任何一方都可以独立退出并撤回自己的敏感内容。</p></section><button className="primary-button" onClick={()=>{setRelationshipExited(false);go("home",true);}}>进入「我们」 <Arrow/></button><button className="ghost-button" onClick={()=>notify("通知权限可稍后在设置中开启")}>暂不开启通知</button></div>}
 
             {screen === "home" && (
               <div className="page tab-page">
@@ -568,14 +618,15 @@ export default function Home() {
                   <div className="home-top"><button className="couple-avatars avatar-button" onClick={() => go("profile")} aria-label={hasRelationship?"查看我们的资料":"查看我的资料"}><div className="avatar a">{profile.name.slice(0,1)}</div>{hasRelationship&&<div className="avatar b">{partnerProfile.name.slice(0,1)}</div>}</button><button className="round-button" onClick={() => go("settings")} aria-label="打开设置">•••</button></div>
                   <p className="kicker">{hasRelationship?"我们在一起":"我的生活空间"}</p><h2>{hasRelationship?"第 1 天":"从今天开始"}</h2><p className="date-line">{hasRelationship?"从真实发生的今天开始":"先体验，准备好后再邀请 TA"}</p><div className="relation-stats"><span><b>{completed ? 1 : 0}</b><small>{hasRelationship?"共同体验":"完成计划"}</small></span><span><b>{taskDone ? 1 : 0}</b><small>完成任务</small></span><button onClick={() => go("important")}><b>{importantAdded ? 1 : 0}</b><small>重要日子</small></button></div>
                 </div>
-                <section className="status-note"><div><p className="kicker">{hasRelationship?"我们的近况":"我的近况"}</p><p>{adopted ? (hasRelationship?"已经有一件共同安排，等待你们一起经历。":"已经保存一项个人计划，随时可以继续完善。") : (hasRelationship?"这里暂时没有统计。完成第一件共同体验后，近况会自然出现。":"先找一份灵感，保存为只对自己可见的计划。")}</p></div><button onClick={() => notify(hasRelationship?"近况只根据双方确认的安排、任务与回忆生成":"单人阶段的内容默认不会向未来的伴侣公开")}>查看依据</button></section>
+                <section className="status-note"><div><p className="kicker">{hasRelationship?"我们的近况":"我的近况"}</p><p>{adopted ? (scheduleIsShared?"已经有一件共同安排，等待你们一起经历。":"已经保存一项个人计划，随时可以继续完善。") : (hasRelationship?"这里暂时没有统计。完成第一件共同体验后，近况会自然出现。":"先找一份灵感，保存为只对自己可见的计划。")}</p></div><button onClick={() => notify(hasRelationship?"近况只根据双方确认的安排、任务与回忆生成":"单人阶段的内容默认不会向未来的伴侣公开")}>查看依据</button></section>
+                {legacyPlan&&!adopted&&account?.authenticated&&<section className="legacy-plan-card" aria-labelledby="legacy-plan-title"><div><p className="kicker">发现旧版本计划</p><h3 id="legacy-plan-title">{legacyPlan.title}</h3><p>{legacyPlan.date} · {legacyPlan.time} · {legacyPlan.city}</p><small>旧计划不会自动恢复。确认后才会导入你的账户，且默认仅自己可见。</small></div><div><button className="secondary-button" disabled={scheduleBusy} onClick={()=>void savePersonalPlan("legacy_import",legacyPlan)}>{scheduleBusy?"正在导入…":"导入旧计划"}</button><button className="ghost-button" disabled={scheduleBusy} onClick={()=>{window.localStorage.setItem("love-diary-legacy-plan-dismissed","1");setLegacyPlan(null);}}>暂不导入</button></div></section>}
                 <section className="content-section"><div className="section-heading"><div><p className="kicker">下一件小事</p><h3>{adopted ? (scheduleDraft.title || currentPlan.title) : "今晚，想一起做点什么？"}</h3></div><span aria-hidden="true">→</span></div>
-                  {adopted ? <button className="event-card" onClick={() => go("schedule")}><span className="date-block"><b>{String(eventDate.getDate()).padStart(2,"0")}</b><small>{eventWeekday}</small></span><span><b>{scheduleDraft.time} · {scheduleDraft.city || profile.city}</b><small>{hasRelationship ? (partnerAccepted ? "双方已接受" : isScheduleCreator ? "等待 TA 接受" : "待你确认") : "我的计划 · 仅自己可见"}</small></span><i aria-hidden="true">›</i></button> : <button className="inspiration-card" onClick={() => go("inspire")}><div className="spark" aria-hidden="true">✦</div><div><b>获取一份约会灵感</b><small>告诉我们此刻的心情，剩下的交给灵感</small></div><i aria-hidden="true">›</i></button>}
+                  {adopted ? <button className="event-card" onClick={() => go("schedule")}><span className="date-block"><b>{String(eventDate.getDate()).padStart(2,"0")}</b><small>{eventWeekday}</small></span><span><b>{scheduleDraft.time} · {scheduleDraft.city || profile.city}</b><small>{scheduleIsShared ? (partnerAccepted ? "双方已接受" : isScheduleCreator ? "等待 TA 接受" : "待你确认") : "我的计划 · 仅自己可见"}</small></span><i aria-hidden="true">›</i></button> : <button className="inspiration-card" onClick={() => go("inspire")}><div className="spark" aria-hidden="true">✦</div><div><b>获取一份约会灵感</b><small>告诉我们此刻的心情，剩下的交给灵感</small></div><i aria-hidden="true">›</i></button>}
                 </section>
                 {!hasRelationship&&<section className="solo-invite-card"><div><p className="kicker">想一起使用时</p><h3>邀请 TA 建立共同空间</h3><p>个人计划不会自动共享，由你决定发出哪些内容。</p></div><button className="secondary-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA <Arrow/></button></section>}
                 <section className="content-section memory-peek"><div className="section-heading"><div><p className="kicker">最近的回忆</p><h3>{completed ? "晚风里，我们聊了很久" : "经历发生后，会自然留在这里"}</h3></div><button onClick={() => go("memories")}>查看全部</button></div>{completed ? <button className="photo-card" onClick={() => go("memory")}><div className="photo-art"><span>{new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit"}).format(eventDate)}</span></div><p>河畔小酒馆 · {eventMonthDay}</p></button> : <button className="empty-content-card" onClick={()=>go("memoryCreate")}><span>♡</span><div><b>还没有共同回忆</b><small>可以先一起经历，也可以手动留下一条真实记录</small></div><i aria-hidden="true">›</i></button>}</section>
                 <section className="content-section task-peek"><div className="section-heading"><div><p className="kicker">情侣任务</p><h3>一起交换一首最近常听的歌</h3></div><button onClick={() => go("taskHistory")}>{taskDone ? "已完成 1 个" : "查看任务"}</button></div><button className="task-card" onClick={() => go("task")}><span aria-hidden="true">♫</span><div><b>{taskAccepted ? "任务进行中" : "给平常加一点新鲜"}</b><small>{taskAccepted ? "去规划一个适合分享音乐的晚上" : "任务是邀请，不是待办压力"}</small></div><i aria-hidden="true">›</i></button></section>
-                <button className="demo-reset" onClick={resetJourney}>↺ 重置原型状态</button>
+                <button className="demo-reset" onClick={resetJourney}>↺ 重置演示状态（保留已保存计划）</button>
                 {bottomNav("home")}
               </div>
             )}
@@ -614,7 +665,7 @@ export default function Home() {
 
             {screen === "plan" && (
               <div className="page detail-page">
-                <div className="detail-hero"><header><Back onClick={() => back("results")}/><span>AI 详细计划</span><button className="icon-button" onClick={() => notify("计划链接已准备好")} aria-label="分享计划">↗</button></header><p className="kicker">候选方案 · 尚未进入日历</p><h2>{currentPlan.title}</h2><p className="plan-summary">{currentPlan.desc}</p><div className="detail-meta"><span>{profile.city} · {choices.time}</span><span>{currentPlan.duration || "约 3.5 小时"}</span><span>{choices.budget}</span></div></div>
+                <div className="detail-hero"><header><Back onClick={() => back("results")}/><span>AI 详细计划</span><button className="icon-button" onClick={() => notify("为保护灵感条件，当前版本不会生成公开计划链接")} aria-label="分享计划说明">↗</button></header><p className="kicker">候选方案 · 尚未进入日历</p><h2>{currentPlan.title}</h2><p className="plan-summary">{currentPlan.desc}</p><div className="detail-meta"><span>{profile.city} · {choices.time}</span><span>{currentPlan.duration || "约 3.5 小时"}</span><span>{choices.budget}</span></div></div>
                 <section className="timeline"><p className="kicker">今晚的节奏</p>{(currentPlan.timeline ?? [
                   { time: "18:30", title: "在地铁口见面", description: "不用赶，先买两杯喜欢的饮料" }, { time: "19:00", title: "沿江慢慢散步", description: "推荐路线 2.3 km · 约 45 分钟" }, { time: "20:00", title: "河畔小酒馆", description: "靠窗位 · 分享甜点与低度酒" }, { time: "21:40", title: "一起回家", description: "今晚留一个问题给彼此" }
                 ]).map((node, i) => <div className="timeline-item" key={`${node.time}-${node.title}`}><span>{node.time}</span><i aria-hidden="true">{i + 1}</i><div>{i === 2 ? <a className="place-link" href="#location" onClick={(event) => {event.preventDefault();go("location");}}><b>{currentPlace?.name || node.title}</b><em>查看地点 ›</em></a> : <b>{node.title}</b>}<p>{node.description}</p>{i === 2 && <button className="replace-place" disabled={currentPlaceCandidates.length < 2} onClick={() => {const next=((selectedPlaceIndexes[selectedPlan]??0)+1)%currentPlaceCandidates.length;setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?next:value));setPlaceVersion(next);notify(`已切换为${currentPlaceCandidates[next]?.name}`);}}>换一个地点</button>}</div></div>)}</section>
@@ -626,16 +677,16 @@ export default function Home() {
 
             {screen === "location" && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span>{currentPlace ? <a className="icon-button" href={amapMapUrl} target="_blank" rel="noreferrer" aria-label="在高德地图中打开地点">↗</a> : <button className="icon-button" onClick={() => notify("本方案尚未匹配到真实地点")} aria-label="地点尚未匹配">↗</button>}</header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>{currentPlace ? "高德地图地点数据" : "AI 地点建议 · 未核验"}</span></div><section className="place-title"><p className="kicker">{currentPlace ? "真实地点已匹配 · 营业信息请出发前确认" : "尚未匹配到真实地点"}</p><h2>{currentPlace?.name || currentPlan.title}</h2><p>{currentPlace?.address || `请在${profile.city}重新生成或更换搜索条件`}</p></section><section className="info-group"><InfoRow label="计划时段" value="以最终安排为准"/><InfoRow label="地点类型" value={currentPlace?.type || "AI 建议"}/><InfoRow label="坐标" value={currentPlace?.location || "尚未获取"}/><InfoRow label="营业时间" value="高德地点搜索未提供，需另行确认"/><InfoRow label="地点来源" value={currentPlace ? "高德地图 Web 服务" : "AIHubMix 建议"}/></section><PlaceCandidates places={currentPlaceCandidates} selectedId={currentPlace?.id} onSelect={(index)=>{setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?index:value));setPlaceVersion(index);}}/><section className="place-notice"><b>执行提示</b><p>{currentPlace ? "地点名称、地址和坐标来自高德地图；营业状态、排队情况与价格可能变化，请出发前确认。" : "AI 不会编造具体商家。重新生成后，系统会尝试用高德地图匹配真实地点。"}</p></section>{currentPlace ? <a className="primary-button map-link" href={amapMapUrl} target="_blank" rel="noreferrer">在高德地图中查看 <Arrow/></a> : <button className="primary-button" onClick={() => {go("inspire");notify("请调整关键词后重新生成");}}>返回调整条件 <Arrow/></button>}<button className="ghost-button" onClick={() => {setSelectedPlan((selectedPlan+1)%3);go("plan");}}>查看另一个方案</button></div>}
 
-            {screen === "confirm" && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>{hasRelationship?"确认安排":"保存我的计划"}</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>{hasRelationship?<>发给 TA，<br/>一起决定。</>:<>先为自己，<br/>保存这个计划。</>}</h2><p className="confirm-copy">{hasRelationship?"你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”。":"计划默认仅自己可见；以后邀请 TA 时，也不会自动共享。"}</p></section><section className="confirm-card"><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>{setScheduleDraft({...scheduleDraft,title:e.target.value});setFormError("");}}/></label><label>日期<input required name="schedule-date" type="date" autoComplete="off" value={scheduleDraft.date} onChange={e=>{setScheduleDraft({...scheduleDraft,date:e.target.value});setFormError("");}}/></label><label>开始时间<input required name="schedule-time" type="time" autoComplete="off" value={scheduleDraft.time} onChange={e=>{setScheduleDraft({...scheduleDraft,time:e.target.value});setFormError("");}}/></label><label>所在城市<input required name="schedule-city" autoComplete="address-level2" value={scheduleDraft.city || profile.city} onChange={e=>{setScheduleDraft({...scheduleDraft,city:e.target.value});setFormError("");}}/></label></section>{formError&&<p className="field-error" role="alert">{formError}</p>}{taskAccepted && <section className="link-context"><span>♫</span><div><b>关联情侣任务</b><p>交换一首最近常听的歌</p></div><em>{hasRelationship?"TA 接受后关联":"保存在我的计划中"}</em></section>}<button className="primary-button" disabled={scheduleBusy} onClick={()=>hasRelationship?void createSharedSchedule():savePersonalPlan()}>{scheduleBusy?"正在发送…":hasRelationship?"发给 TA 确认":"保存到我的计划"} <Arrow/></button>{!hasRelationship&&<button className="ghost-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定</button>}<button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
+            {screen === "confirm" && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>{hasRelationship?"确认安排":"保存我的计划"}</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>{hasRelationship?<>发给 TA，<br/>一起决定。</>:<>先为自己，<br/>保存这个计划。</>}</h2><p className="confirm-copy">{hasRelationship?"你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”。":"计划默认仅自己可见；以后邀请 TA 时，也不会自动共享。"}</p></section><section className="confirm-card"><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>{setScheduleDraft({...scheduleDraft,title:e.target.value});setFormError("");}}/></label><label>日期<input required name="schedule-date" type="date" autoComplete="off" value={scheduleDraft.date} onChange={e=>{setScheduleDraft({...scheduleDraft,date:e.target.value});setFormError("");}}/></label><label>开始时间<input required name="schedule-time" type="time" autoComplete="off" value={scheduleDraft.time} onChange={e=>{setScheduleDraft({...scheduleDraft,time:e.target.value});setFormError("");}}/></label><label>所在城市<input required name="schedule-city" autoComplete="address-level2" value={scheduleDraft.city || profile.city} onChange={e=>{setScheduleDraft({...scheduleDraft,city:e.target.value});setFormError("");}}/></label></section>{formError&&<p className="field-error" role="alert">{formError}</p>}{taskAccepted && <section className="link-context"><span>♫</span><div><b>关联情侣任务</b><p>交换一首最近常听的歌</p></div><em>{hasRelationship?"TA 接受后关联":"保存在我的计划中"}</em></section>}<button className="primary-button" disabled={scheduleBusy} onClick={()=>hasRelationship?void createSharedSchedule():void savePersonalPlan()}>{scheduleBusy?"正在保存…":hasRelationship?"发给 TA 确认":"保存到我的计划"} <Arrow/></button>{!hasRelationship&&<button className="ghost-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定</button>}<button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
 
             {screen === "schedule" && (
               <div className="page schedule-page">
                 <header><Back onClick={() => back("calendar")}/><span>安排详情</span><button className="text-button" onClick={() => setPanel("edit")}>编辑</button></header>
-                <div className={`confirmation ${cancelled ? "is-cancelled" : ""} ${hasRelationship&&!partnerAccepted&&!cancelled?"is-pending":""}`}><span>{cancelled ? "×" : hasRelationship&&!partnerAccepted ? "◷" : "✓"}</span><p>{cancelled ? "安排已取消" : !hasRelationship ? "我的计划 · 仅自己可见" : !partnerAccepted ? "等待 TA 接受" : completed ? "双方已确认完成" : "双方已接受 · 正式安排"}</p></div>
+                <div className={`confirmation ${cancelled ? "is-cancelled" : ""} ${scheduleIsShared&&!partnerAccepted&&!cancelled?"is-pending":""}`}><span>{cancelled ? "×" : scheduleIsShared&&!partnerAccepted ? "◷" : "✓"}</span><p>{cancelled ? "安排已取消" : !scheduleIsShared ? "我的计划 · 仅自己可见" : !partnerAccepted ? "等待 TA 接受" : completed ? "双方已确认完成" : "双方已接受 · 正式安排"}</p></div>
                 <div className="schedule-title"><p className="kicker">{eventDateLong}</p><h2>{scheduleDraft.title || currentPlan.title}</h2><p>{scheduleDraft.time} · {scheduleDraft.city || profile.city}</p></div>
-                <section className="schedule-card"><div><span className="label">时间</span><b>{eventMonthDay} {scheduleDraft.time}</b></div><div><span className="label">集合</span><b>近江地铁站 B 口</b></div><div><span className="label">预算</span><b>约 {eventBudget}{hasRelationship?" / 两人":" · 参考"}</b></div><button onClick={() => go("plan")}>查看完整路线 <span>›</span></button></section>
+                <section className="schedule-card"><div><span className="label">时间</span><b>{eventMonthDay} {scheduleDraft.time}</b></div><div><span className="label">集合</span><b>近江地铁站 B 口</b></div><div><span className="label">预算</span><b>约 {eventBudget}{scheduleIsShared?" / 两人":" · 参考"}</b></div><button onClick={() => go("plan")}>查看完整路线 <span>›</span></button></section>
                 {taskLinked && <button className="linked-task" onClick={() => go("task")}><span>♫</span><div><small>关联情侣任务</small><b>交换一首最近常听的歌</b></div><i aria-hidden="true">›</i></button>}
-                {!hasRelationship ? <div className="schedule-actions confirm-wait"><div className="wait-card"><span>○</span><div><b>这是我的计划</b><p>目前只对你可见；建立关系后仍由你决定是否分享。</p></div></div><button className="primary-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定 <Arrow/></button><button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>删除这个计划</button></div> : <><div className="people-row"><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{cancelled ? "这次安排已取消" : !partnerAccepted ? (isScheduleCreator ? "你已发出邀请" : "TA 已发出邀请") : myConfirmed ? "你已确认完成" : "双方已经接受"}</b><p>{!partnerAccepted ? (isScheduleCreator ? "等待 TA 接受、拒绝或提出修改" : "接受后会进入双方共同日历") : taConfirmed ? "TA 也已确认完成" : myConfirmed ? "正在等待 TA 确认完成" : "安排已进入双方共同日历"}</p></div><div className="avatar b">{partnerProfile.name.slice(0,1)}</div></div>{cancelled ? <div className="schedule-actions"><button className="primary-button" onClick={() => {setCancelled(false);setPartnerAccepted(false);notify("已重新发给 TA 确认");}}>重新发起安排 <Arrow /></button></div> : !partnerAccepted ? <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>{isScheduleCreator?"等待 TA 接受":"TA 发来一项共同安排"}</b><p>接受后才会成为双方已确认的正式安排</p></div></div>{!isScheduleCreator&&<button className="primary-button" disabled={scheduleBusy} onClick={()=>void acceptSharedSchedule()}>{scheduleBusy?"正在同步…":"接受这个安排"} <Arrow/></button>}</div> : completed ? <div className="schedule-actions"><div className="recorded-note"><b>这次经历已记录 ♡</b><p>{taskDone ? "关联任务也已完成；没有生成第二条回忆。" : "基础回忆已经生成，稍后完善也算完整。"}</p></div><button className="primary-button" onClick={() => go("memory")}>完善这次回忆 <Arrow /></button></div> : !canConfirmCompletion ? <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待一起出发</b><p>活动日期到来后，双方才能确认完成并生成基础回忆</p></div></div><button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>取消这个安排</button></div> : !myConfirmed ? <div className="schedule-actions"><button className="primary-button" onClick={() => setMyConfirmed(true)}>我完成了 <Arrow /></button><button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>取消这个安排</button></div> : <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待 TA 确认完成</b><p>双方确认后，才会生成不含虚构感受的基础回忆</p></div></div><button className="primary-button" onClick={() => {setTaConfirmed(true); setCompleted(true); setTaskDone(taskLinked); notify("双方已确认，基础回忆已生成");}}>模拟 TA 确认完成 <Arrow /></button></div>}</>}
+                {!scheduleIsShared ? <div className="schedule-actions confirm-wait"><div className="wait-card"><span>○</span><div><b>这是我的计划</b><p>目前只对你可见；建立关系后仍由你决定是否分享。</p></div></div>{!hasRelationship&&<button className="primary-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定 <Arrow/></button>}<button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>删除这个计划</button></div> : <><div className="people-row"><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{cancelled ? "这次安排已取消" : !partnerAccepted ? (isScheduleCreator ? "你已发出邀请" : "TA 已发出邀请") : myConfirmed ? "你已确认完成" : "双方已经接受"}</b><p>{!partnerAccepted ? (isScheduleCreator ? "等待 TA 接受、拒绝或提出修改" : "接受后会进入双方共同日历") : taConfirmed ? "TA 也已确认完成" : myConfirmed ? "正在等待 TA 确认完成" : "安排已进入双方共同日历"}</p></div><div className="avatar b">{partnerProfile.name.slice(0,1)}</div></div>{cancelled ? <div className="schedule-actions"><button className="primary-button" onClick={() => {setCancelled(false);setPartnerAccepted(false);notify("已重新发给 TA 确认");}}>重新发起安排 <Arrow /></button></div> : !partnerAccepted ? <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>{isScheduleCreator?"等待 TA 接受":"TA 发来一项共同安排"}</b><p>接受后才会成为双方已确认的正式安排</p></div></div>{!isScheduleCreator&&<button className="primary-button" disabled={scheduleBusy} onClick={()=>void acceptSharedSchedule()}>{scheduleBusy?"正在同步…":"接受这个安排"} <Arrow/></button>}</div> : completed ? <div className="schedule-actions"><div className="recorded-note"><b>这次经历已记录 ♡</b><p>{taskDone ? "关联任务也已完成；没有生成第二条回忆。" : "基础回忆已经生成，稍后完善也算完整。"}</p></div><button className="primary-button" onClick={() => go("memory")}>完善这次回忆 <Arrow /></button></div> : !canConfirmCompletion ? <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待一起出发</b><p>活动日期到来后，双方才能确认完成并生成基础回忆</p></div></div><button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>取消这个安排</button></div> : !myConfirmed ? <div className="schedule-actions"><button className="primary-button" onClick={() => setMyConfirmed(true)}>我完成了 <Arrow /></button><button className="ghost-button danger-text" onClick={() => setPanel("cancel")}>取消这个安排</button></div> : <div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待 TA 确认完成</b><p>双方确认后，才会生成不含虚构感受的基础回忆</p></div></div><button className="primary-button" onClick={() => {setTaConfirmed(true); setCompleted(true); setTaskDone(taskLinked); notify("双方已确认，基础回忆已生成");}}>模拟 TA 确认完成 <Arrow /></button></div>}</>}
                 {bottomNav("calendar")}
               </div>
             )}
@@ -645,9 +696,9 @@ export default function Home() {
                 <header><div><p className="kicker">{hasRelationship?"共同日历":"我的日历"}</p><h2>{calendarTitle}</h2></div><button className="round-button" onClick={() => setPanel("calendarAdd")} aria-label="添加日历内容">＋</button></header>
                 <div className="month-switch"><button onClick={() => {setMonthOffset(v=>v-1);setSelectedDay(1);}} aria-label="上一个月">‹</button><button className="today-button" onClick={jumpToToday}>今日</button><button onClick={() => {setMonthOffset(v=>v+1);setSelectedDay(1);}} aria-label="下一个月">›</button></div>
                 <div className="week-row">{["一","二","三","四","五","六","日"].map(x => <span key={x}>{x}</span>)}</div>
-                <div className="month-grid">{Array.from({length: Math.ceil((leadingDays + daysInMonth) / 7) * 7}, (_, i) => { const d = i - leadingDays + 1; const valid=d>0&&d<=daysInMonth; const isToday=isCurrentMonth&&d===today.getDate(); const states=[isToday?"今天":"",restDays.includes(d)?"休息日":"",adjustedWorkDays.includes(d)?"调休上班":"",isEventMonth&&d===eventDate.getDate()&&adopted?(hasRelationship?"有正式安排":"有我的计划"):"",isIdeaMonth&&d===16&&hasGenerated?"有 AI 灵感":"",isImportantMonth&&d===importantDate.getDate()&&importantAdded?"重要日子":""].filter(Boolean).join("，"); return valid ? <button key={i} onClick={()=>setSelectedDay(d)} aria-label={`${calendarYear}年${calendarMonth+1}月${d}日${states?`，${states}`:""}`} aria-pressed={d===selectedDay} className={`${d === selectedDay ? "selected-day" : ""} ${isToday?"today":""} ${isEventMonth&&d === eventDate.getDate() && adopted ? (hasRelationship?"official":"personal-plan") : ""} ${isIdeaMonth&&d === 16 && hasGenerated ? "idea" : ""} ${isImportantMonth&&d===importantDate.getDate()&&importantAdded?"important-dot":""} ${restDays.includes(d)?"rest-day":""} ${adjustedWorkDays.includes(d)?"work-day":""}`}><span>{d}</span>{restDays.includes(d)&&<small className="day-type rest">休</small>}{adjustedWorkDays.includes(d)&&<small className="day-type work">班</small>}{isImportantMonth&&d===importantDate.getDate()&&importantAdded&&<small>纪念日</small>}</button> : <span key={i} aria-hidden="true"/>; })}</div>
-                <div className="legend"><span><i className={hasRelationship?"solid-dot":"personal-dot"}/>{hasRelationship?"正式内容":"我的计划"}</span><span><i className="ring-dot"/>AI 灵感</span><span><i className="rest-swatch"/>休息日</span><span><i className="work-swatch"/>调休上班</span></div>
-                <section className="day-agenda"><p className="kicker">{calendarMonth+1}月{selectedDay}日</p>{isEventMonth&&selectedDay===eventDate.getDate()&&adopted ? <button className="agenda-item" onClick={() => go("schedule")}><i aria-hidden="true"/><span><b>{scheduleDraft.time}</b><small>{hasRelationship?"正式安排":"我的计划"}</small></span><div><b>{scheduleDraft.title || currentPlan.title}</b><small>{cancelled?"已取消":`${hasRelationship?"共同安排":"仅自己可见"} · ${scheduleDraft.city || profile.city}`}</small></div><em aria-hidden="true">›</em></button> : isImportantMonth&&selectedDay===importantDate.getDate()&&importantAdded ? <button className="agenda-item important-agenda" onClick={() => go("important")}><i aria-hidden="true"/><span><b>全天</b></span><div><b>我们的一周年</b><small>重要日子 · 每年重复</small></div><em aria-hidden="true">›</em></button> : isIdeaMonth&&selectedDay===16&&hasGenerated ? <div className="idea-day"><span aria-hidden="true">✦</span><div><b>AI 轻量建议</b><p>周日下午适合去城市周边走走，尚未成为正式安排。</p></div><button onClick={()=>go("inspire")}>继续规划</button></div> : <div className="empty-day"><span aria-hidden="true">☼</span><p>这一天还没有{hasRelationship?"共同安排":"个人计划"}</p><button onClick={() => go("inspire")}>找点灵感</button></div>}</section>
+                <div className="month-grid">{Array.from({length: Math.ceil((leadingDays + daysInMonth) / 7) * 7}, (_, i) => { const d = i - leadingDays + 1; const valid=d>0&&d<=daysInMonth; const isToday=isCurrentMonth&&d===today.getDate(); const isAdjustedWork=adjustedWorkDays.includes(d); const states=[isToday?"今天":"",!isAdjustedWork&&restDays.includes(d)?"休息日":"",isAdjustedWork?"调休上班":"",isEventMonth&&d===eventDate.getDate()&&adopted?(scheduleIsShared?"有正式安排":"有我的计划"):"",isIdeaMonth&&d===16&&hasGenerated?"有 AI 灵感":"",isImportantMonth&&d===importantDate.getDate()&&importantAdded?"重要日子":""].filter(Boolean).join("，"); return valid ? <button key={i} onClick={()=>setSelectedDay(d)} aria-label={`${calendarYear}年${calendarMonth+1}月${d}日${states?`，${states}`:""}`} aria-pressed={d===selectedDay} className={`${d === selectedDay ? "selected-day" : ""} ${isToday?"today":""} ${isEventMonth&&d === eventDate.getDate() && adopted ? (scheduleIsShared?"official":"personal-plan") : ""} ${isIdeaMonth&&d === 16 && hasGenerated ? "idea" : ""} ${isImportantMonth&&d===importantDate.getDate()&&importantAdded?"important-dot":""} ${!isAdjustedWork&&restDays.includes(d)?"rest-day":""} ${isAdjustedWork?"work-day":""}`}><span>{d}</span>{!isAdjustedWork&&restDays.includes(d)&&<small className="day-type rest">休</small>}{isAdjustedWork&&<small className="day-type work">班</small>}{isImportantMonth&&d===importantDate.getDate()&&importantAdded&&<small>纪念日</small>}</button> : <span key={i} aria-hidden="true"/>; })}</div>
+                <div className="legend"><span><i className={scheduleIsShared?"solid-dot":"personal-dot"}/>{scheduleIsShared?"正式内容":"我的计划"}</span><span><i className="ring-dot"/>AI 灵感</span><span><i className="rest-swatch"/>休息日</span><span><i className="work-swatch"/>调休上班</span></div>
+                <section className="day-agenda"><p className="kicker">{calendarMonth+1}月{selectedDay}日</p>{isEventMonth&&selectedDay===eventDate.getDate()&&adopted ? <button className="agenda-item" onClick={() => go("schedule")}><i aria-hidden="true"/><span><b>{scheduleDraft.time}</b><small>{scheduleIsShared?"正式安排":"我的计划"}</small></span><div><b>{scheduleDraft.title || currentPlan.title}</b><small>{cancelled?"已取消":`${scheduleIsShared?"共同安排":"仅自己可见"} · ${scheduleDraft.city || profile.city}`}</small></div><em aria-hidden="true">›</em></button> : isImportantMonth&&selectedDay===importantDate.getDate()&&importantAdded ? <button className="agenda-item important-agenda" onClick={() => go("important")}><i aria-hidden="true"/><span><b>全天</b></span><div><b>我们的一周年</b><small>重要日子 · 每年重复</small></div><em aria-hidden="true">›</em></button> : isIdeaMonth&&selectedDay===16&&hasGenerated ? <div className="idea-day"><span aria-hidden="true">✦</span><div><b>AI 轻量建议</b><p>周日下午适合去城市周边走走，尚未成为正式安排。</p></div><button onClick={()=>go("inspire")}>继续规划</button></div> : <div className="empty-day"><span aria-hidden="true">☼</span><p>这一天还没有{hasRelationship?"共同安排或个人计划":"个人计划"}</p><button onClick={() => go("inspire")}>找点灵感</button></div>}</section>
                 {bottomNav("calendar")}
               </div>
             )}
@@ -674,22 +725,22 @@ export default function Home() {
 
             {screen === "taskHistory" && <div className="page formal-page"><header><Back onClick={() => back("home")}/><span>情侣任务</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">当前任务</p><h2>偶尔想到一件，<br/>值得一起做的小事。</h2></section><button className="task-history-current" onClick={() => go("task")}><span>♫</span><div><b>交换一首最近常听的歌</b><small>{taskDone?"双方已完成":taskAccepted?"进行中":"等待接受"}</small></div><i aria-hidden="true">›</i></button><p className="month-title">历史任务</p>{taskDone?<div className="history-row"><span>✓</span><div><b>交换一首最近常听的歌</b><small>由本次真实演示状态生成</small></div></div>:<div className="empty-inline"><span>○</span><p>还没有已完成或已更换的任务</p></div>}</div>}
 
-            {screen === "settings" && <div className="page tab-page formal-page settings-page"><header><div><p className="kicker">恋爱日记</p><h2>设置</h2></div><i aria-hidden="true"/></header><button type="button" className="settings-profile" onClick={() => go("profile")}><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{profile.name}</b><small>{hasRelationship?`与${partnerProfile.name}已连接`:"单人体验中 · 内容仅自己可见"}</small></div><i aria-hidden="true">›</i></button><section className="settings-group"><SettingRow icon="♢" label={hasRelationship?"我们的资料":"我的资料"} onClick={() => go("profile")}/><SettingRow icon="◌" label="重要日子" onClick={() => go("important")}/>{!hasRelationship&&<SettingRow icon="♡" label="邀请 TA 一起使用" value="随时可以" onClick={() => {setOnboardingIntent("invite");go("connect");}}/>}</section><section className="settings-group">{hasRelationship&&<SettingRow icon="♡" label="关系与数据安全" value="可随时退出" onClick={() => go("relationshipSafety")}/>}<SettingRow icon="♢" label="通知与提醒" onClick={() => go("notifications")}/><SettingRow icon="◉" label="隐私与 AI 数据说明" onClick={() => go("privacy")}/><SettingRow icon="▢" label="照片与存储" onClick={() => notify("每项内容都会记录上传者、授权范围与撤回状态")}/></section><section className="settings-group"><SettingRow icon="?" label="帮助与反馈" onClick={() => notify("帮助中心将在产品开发阶段接入")}/><SettingRow icon="○" label="关于恋爱日记" value="V1.13"/></section>{bottomNav("settings")}</div>}
+            {screen === "settings" && <div className="page tab-page formal-page settings-page"><header><div><p className="kicker">恋爱日记</p><h2>设置</h2></div><i aria-hidden="true"/></header><button type="button" className="settings-profile" onClick={() => go("profile")}><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{profile.name}</b><small>{hasRelationship?`与${partnerProfile.name}已连接`:"单人体验中 · 内容仅自己可见"}</small></div><i aria-hidden="true">›</i></button><section className="settings-group"><SettingRow icon="♢" label={hasRelationship?"我们的资料":"我的资料"} onClick={() => go("profile")}/><SettingRow icon="◌" label="重要日子" onClick={() => go("important")}/>{!hasRelationship&&<SettingRow icon="♡" label="邀请 TA 一起使用" value="随时可以" onClick={() => {setOnboardingIntent("invite");go("connect");}}/>}</section><section className="settings-group">{hasRelationship&&<SettingRow icon="♡" label="关系与数据安全" value="可随时退出" onClick={() => go("relationshipSafety")}/>}<SettingRow icon="♢" label="通知与提醒" onClick={() => go("notifications")}/><SettingRow icon="◉" label="隐私与 AI 数据说明" onClick={() => go("privacy")}/><SettingRow icon="▢" label="照片与存储" onClick={() => notify("每项内容都会记录上传者、授权范围与撤回状态")}/></section><section className="settings-group"><SettingRow icon="?" label="帮助与反馈" onClick={() => notify("帮助中心将在产品开发阶段接入")}/><SettingRow icon="○" label="关于恋爱日记" value="V1.14"/></section>{bottomNav("settings")}</div>}
 
             {screen === "notifications" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>通知与提醒</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">只提醒重要的事</p><h2>不让共同生活，<br/>变成通知压力。</h2></section><section className="settings-group"><ToggleRow label="共同安排提醒" note="开始前与变更时提醒"/><ToggleRow label="重要日子提醒" note="按你们设置的提前时间提醒"/><ToggleRow label="TA 的状态变化" note="接受安排、完成确认"/></section><p className="policy-note">不会发送连续签到、任务催促或关系评分通知。</p></div>}
 
-            {screen === "privacy" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>隐私与 AI</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">你的生活，由你决定</p><h2>AI 提供建议，<br/>不会替你确认事实。</h2></section><section className="principle-card"><span>01</span><div><b>建议不是正式安排</b><p>只有点击“采用这个安排”后，内容才会进入共同日历；所有生成内容均标记“AI 建议”。</p></div></section><section className="principle-card"><span>02</span><div><b>不推断关系与感受</b><p>不生成忠诚度、关系评分、分手概率或心理诊断；用户文字不会被自动覆盖。</p></div></section><section className="principle-card"><span>03</span><div><b>私密内容默认不训练</b><p>双方文字、照片与状态默认不用于模型训练；撤回来源数据时，关联摘要与画像同步删除。</p></div></section><section className="principle-card"><span>04</span><div><b>每个人都能独立离开</b><p>退出不需要对方确认；自己的敏感内容可以立即撤回，对方离线副本无法远程删除。</p></div></section><section className="principle-card"><span>05</span><div><b>公开原型不等于公开关系</b><p>当前演示数据只保存在本机浏览器，不实现真实同步或第三方访问。</p></div></section><button className="secondary-button safety-entry" onClick={() => go("relationshipSafety")}>查看关系安全设置 <Arrow/></button><button className="subtle-danger" onClick={() => setPanel("clearData")}>清空全部数据</button></div>}
+            {screen === "privacy" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>隐私与 AI</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">你的生活，由你决定</p><h2>AI 提供建议，<br/>不会替你确认事实。</h2></section><section className="principle-card"><span>01</span><div><b>建议不是正式安排</b><p>只有点击“采用这个安排”后，内容才会进入共同日历；所有生成内容均标记“AI 建议”。</p></div></section><section className="principle-card"><span>02</span><div><b>不推断关系与感受</b><p>不生成忠诚度、关系评分、分手概率或心理诊断；用户文字不会被自动覆盖。</p></div></section><section className="principle-card"><span>03</span><div><b>私密内容默认不训练</b><p>双方文字、照片与状态默认不用于模型训练；撤回来源数据时，关联摘要与画像同步删除。</p></div></section><section className="principle-card"><span>04</span><div><b>每个人都能独立离开</b><p>退出不需要对方确认；自己的敏感内容可以立即撤回，对方离线副本无法远程删除。</p></div></section><section className="principle-card"><span>05</span><div><b>公开原型不等于公开关系</b><p>账号资料、关系与已确认计划通过安全连接同步；灵感表单只保存在当前标签页会话中，不写入网址。</p></div></section><button className="secondary-button safety-entry" onClick={() => go("relationshipSafety")}>查看关系安全设置 <Arrow/></button><button className="subtle-danger" onClick={() => setPanel("clearData")}>清空本机会话</button></div>}
 
             {screen === "relationshipSafety" && <div className="page formal-page safety-page"><header><Back onClick={() => back("settings")}/><span>关系与数据安全</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">离开不需要许可</p><h2>你的安全，<br/>不由对方决定。</h2><p className="confirm-copy">任何一方都能独立退出。共同空间解散可以协商，但不能阻止个人离开。</p></section><section className="safety-status"><span>✓</span><div><b>当前共享权限正常</b><p>照片、文字与 AI 衍生内容均记录来源和撤回状态。</p></div></section><section className="settings-group"><SettingRow icon="◎" label="查看我的内容与授权" value="3 类内容" onClick={()=>notify("普通记录、个人原创与敏感内容已分别管理")}/><SettingRow icon="⇩" label="导出我的数据" value="不含 TA 已撤回内容" onClick={()=>notify("导出包已准备；退出处理中会冻结批量导出")}/><SettingRow icon="!" label="举报骚扰或内容滥用" onClick={()=>setPanel("reportSafety")}/></section><section className="safety-explainer"><b>退出后保留什么？</b><p>你自己的内容和必要共同事实可形成只读归档；TA 撤回的内容会显示为占位说明。新关系永远不能访问旧关系数据。</p></section><button className="secondary-button" onClick={()=>setPanel("normalExit")}>退出当前关系</button><button className="danger-button safety-danger" onClick={()=>setPanel("safetyExit")}>立即退出并保护我的内容</button><p className="policy-note">安全退出会先撤销共享、下载和历史文件链接，再通知对方。</p></div>}
 
-            {screen === "relationshipArchive" && <div className="page formal-page archive-page"><header><span/><span>{safetyExitUsed?"安全退出完成":"旧关系归档"}</span><i aria-hidden="true"/></header><div className="success-symbol protected">✓</div><section className="page-intro compact"><p className="kicker">{safetyExitUsed?"共享权限已撤销":"你已独立退出"}</p><h2>{safetyExitUsed?"你的内容，已受到保护。":"这段记录，现在只读保存。"}</h2><p className="confirm-copy">退出无需对方确认。对方已收到不含举报详情的通知；新关系无法访问这里的数据。</p></section><section className="protection-checklist"><div><span>✓</span><p><b>敏感内容已撤回</b><small>对方无法继续查看或下载</small></p></div><div><span>✓</span><p><b>历史访问链接已失效</b><small>离线截屏与已导出文件无法远程删除</small></p></div><div><span>✓</span><p><b>AI 衍生内容已清理</b><small>关系评价、摘要和画像不再保留</small></p></div></section>{!safetyExitUsed&&<section className="archive-card"><p className="kicker">只读共同事实</p><b>晚风散步与河畔小酒馆</b><small>{eventDateLong} · 双方曾确认</small><p>个人文字和照片仍受各自撤回权限控制。</p></section>}<button className="primary-button" onClick={()=>{setHasStarted(false);setRelationshipExited(false);setSafetyExitUsed(false);history.current=[];go("connect",true);}}>建立新的关系 <Arrow/></button><button className="ghost-button" onClick={()=>notify("旧关系数据不会带入新的共同空间")}>了解数据隔离</button></div>}
+            {screen === "relationshipArchive" && <div className="page formal-page archive-page"><header><span/><span>{safetyExitUsed?"安全退出完成":"旧关系归档"}</span><i aria-hidden="true"/></header><div className="success-symbol protected">✓</div><section className="page-intro compact"><p className="kicker">{safetyExitUsed?"共享权限已撤销":"你已独立退出"}</p><h2>{safetyExitUsed?"你的内容，已受到保护。":"这段记录，现在只读保存。"}</h2><p className="confirm-copy">退出无需对方确认。对方已收到不含举报详情的通知；新关系无法访问这里的数据。</p></section><section className="protection-checklist"><div><span>✓</span><p><b>敏感内容已撤回</b><small>对方无法继续查看或下载</small></p></div><div><span>✓</span><p><b>历史访问链接已失效</b><small>离线截屏与已导出文件无法远程删除</small></p></div><div><span>✓</span><p><b>AI 衍生内容已清理</b><small>关系评价、摘要和画像不再保留</small></p></div></section>{!safetyExitUsed&&<section className="archive-card"><p className="kicker">只读共同事实</p><b>晚风散步与河畔小酒馆</b><small>{eventDateLong} · 双方曾确认</small><p>个人文字和照片仍受各自撤回权限控制。</p></section>}<button className="primary-button" onClick={()=>{setRelationshipExited(false);setSafetyExitUsed(false);history.current=[];go("connect",true);}}>建立新的关系 <Arrow/></button><button className="ghost-button" onClick={()=>notify("旧关系数据不会带入新的共同空间")}>了解数据隔离</button></div>}
 
             {screen === "task" && <div className="page task-page"><header><Back onClick={() => back("home")}/><span>情侣任务</span><button className="text-button" onClick={()=>go("taskHistory")}>历史</button></header><div className="task-hero"><span>{taskDone?"✓":"♫"}</span><p className="kicker">{taskDone?"任务完成 ♡":"当前任务"}</p><h2>交换一首<br/>最近常听的歌</h2><p>不是为了猜对彼此，而是借一首歌，听见最近没有说出口的心情。</p></div><div className="task-rule"><span>01</span><p><b>各自选一首</b><br/>先不要告诉对方原因</p><span>02</span><p><b>一起完整听完</b><br/>再分享为什么选择它</p></div>{taskDone?<div className="task-actions"><div className="accepted-badge">✓ 已随关联安排完成，没有额外生成回忆</div><button className="primary-button" onClick={()=>{setTaskAccepted(false);setTaskLinked(false);setTaskDone(false);notify("可以在想要的时候获取下一个任务");go("home");}}>完成并回到我们 <Arrow/></button></div>:taskLinked?<div className="task-actions"><div className="linked-plan-preview"><b>已规划</b><p>{currentPlan.title}</p><small>{eventMonthDay} 18:30 · 当前唯一关联安排</small></div><button className="primary-button" onClick={()=>go("schedule")}>查看安排 <Arrow/></button></div>:!taskAccepted ? <div className="task-actions"><button className="primary-button" onClick={() => setTaskAccepted(true)}>接受这个任务 <Arrow/></button><button className="ghost-button" onClick={() => notify("更换后将记为已更换，不计入完成数")}>更换任务</button><button className="ghost-button" onClick={()=>{setTaskAccepted(true);setTaskDone(true);notify("任务已完成；未创建日历或回忆");}}>已经完成</button></div> : <div className="task-actions"><div className="accepted-badge">✓ 已加入你们的任务</div><button className="primary-button" onClick={() => {setChoices({...choices, mood:"想放松"}); go("inspire");}}>去规划一个晚上 <Arrow/></button><button className="ghost-button" onClick={()=>{setTaskDone(true);notify("任务已完成；共同体验次数不增加");}}>现实中已经完成</button></div>}</div>}
           </div>
         </div>
       </section>
-      {panel && !["profileEdit","cityEdit","normalExit","safetyExit","reportSafety","clearData"].includes(panel) && <div className="modal-backdrop"><section ref={modalRef} className="bottom-sheet" role="dialog" aria-modal="true" aria-label="操作面板" tabIndex={-1}><div className="sheet-handle" aria-hidden="true"/><button type="button" className="sheet-close" onClick={() => setPanel("")} aria-label="关闭面板">×</button>{panel === "edit" && <><p className="kicker">编辑正式安排</p><h2>这已经是你们的安排</h2><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>setScheduleDraft({...scheduleDraft,title:e.target.value})}/></label><label>日期与时间<input required name="edit-date-time" type="datetime-local" autoComplete="off" value={`T`} onChange={e=>{const [date,time]=e.target.value.split("T");setScheduleDraft({...scheduleDraft,date,time});}}/></label><label>集合地点<input required name="meeting-place" autoComplete="off" value={meetingPlace} onChange={e=>setMeetingPlace(e.target.value)}/></label><button className="secondary-button node-edit" onClick={()=>notify("可新增、删除或调整节点顺序")}>管理行程节点</button><button className="primary-button" onClick={() => {setPartnerAccepted(false);setPanel("");notify("安排已更新，等待 TA 重新确认");}}>保存修改 <Arrow/></button></>}{panel === "cancel" && <><div className="danger-symbol">!</div><h2>{hasRelationship?"确定取消这个安排？":"确定删除这个计划？"}</h2><p className="sheet-copy">{hasRelationship?"取消后会保留记录；若关联任务，任务会解除关联但安排历史不会消失。":"删除后会从你的首页和日历中移除，且无法恢复。"}</p><button className="danger-button" onClick={() => {setCancelled(true);setTaskLinked(false);setPanel("");}}>{hasRelationship?"确认取消":"确认删除"}</button><button className="ghost-button" onClick={() => setPanel("")}>{hasRelationship?"保留安排":"暂不删除"}</button></>}{panel === "memoryEdit" && <><p className="kicker">我的内容，由我管理</p><h2>补充一点真实细节</h2><button className={`photo-upload ${memoryPhoto&&!memoryContentRetracted ? "added" : ""}`} onClick={() => {setMemoryPhoto(true);setMemoryContentRetracted(false);}}><span>{memoryPhoto&&!memoryContentRetracted ? "✓" : "+"}</span>{memoryPhoto&&!memoryContentRetracted ? "已添加1张 · 由我上传" : "添加我的照片（最多9张）"}</button><label>回忆名称<input name="memory-title-edit" autoComplete="off" value={memoryDraft.title} onChange={e=>setMemoryDraft({...memoryDraft,title:e.target.value})}/></label><label>想留住的一句话<textarea name="memory-note" autoComplete="off" value={memoryNote} onChange={e => setMemoryNote(e.target.value)}/></label><p className="sheet-copy">照片和文字会标记为由你上传，可随时撤回；AI 不会自动覆盖。</p><button className="primary-button" onClick={() => {setMemoryContentRetracted(false);setPanel("");notify("我的内容已保存，并记录来源");}}>保存到回忆 <Arrow/></button></>}{panel === "retractMemory"&&<><div className="danger-symbol">↩</div><p className="kicker">撤回我的内容</p><h2>让对方也无法继续访问？</h2><p className="sheet-copy">你上传的照片和补充文字会从双方在线副本中移除；共同确认的日期、地点与活动仍作为各自历史事实保留。</p><div className="risk-note"><b>撤回不等于远程销毁</b><p>对方此前的截屏或离线导出文件无法由平台删除。</p></div><button className="danger-button" onClick={()=>{setMemoryContentRetracted(true);setPanel("");notify("个人内容已同步撤回，历史文件链接已失效");}}>撤回照片与个人文字</button><button className="ghost-button" onClick={()=>setPanel("")}>暂不撤回</button></>}{panel === "deleteMemory"&&<><div className="danger-symbol">!</div><h2>删除我的回忆副本？</h2><p className="sheet-copy">只会删除你看到的这条回忆，不会删除对方的副本。若要让对方也无法访问你上传的内容，请使用“管理来源与撤回”。</p><button className="danger-button" onClick={()=>{setMemoryDeleted(true);setPanel("");go("memories");}}>删除我的副本</button><button className="ghost-button" onClick={()=>setPanel("")}>取消</button></>}{panel === "calendarAdd"&&<><p className="kicker">添加到共同日历</p><h2>想记录什么？</h2><button className="sheet-choice" onClick={()=>{setPanel("");go("inspire");}}><span>＋</span><div><b>添加安排</b><p>手动创建，或先从灵感开始</p></div><i aria-hidden="true">›</i></button><button className="sheet-choice" onClick={()=>{setPanel("");go("importantCreate");}}><span>♡</span><div><b>添加重要日子</b><p>生日、纪念日或其他值得记住的日期</p></div><i aria-hidden="true">›</i></button></>}</section></div>}
-      {["profileEdit","cityEdit","normalExit","safetyExit","reportSafety","clearData"].includes(panel) && <div className="modal-backdrop"><section ref={modalRef} className="bottom-sheet" role="dialog" aria-modal="true" aria-label="确认操作" tabIndex={-1}><div className="sheet-handle" aria-hidden="true"/><button type="button" className="sheet-close" onClick={() => setPanel("")} aria-label="关闭面板">×</button>{panel==="profileEdit"&&<><p className="kicker">编辑我的资料</p><h2>每个人管理自己的资料</h2><label>昵称<input name="my-name" autoComplete="name" spellCheck={false} maxLength={30} value={profile.name} onChange={e=>{setProfile({...profile,name:e.target.value});setProfileError("");}}/></label><label>生日<input name="my-birthday" autoComplete="bday" inputMode="numeric" maxLength={20} value={profile.birthday} onChange={e=>setProfile({...profile,birthday:e.target.value})}/></label><label>当前城市<input name="city" autoComplete="address-level2" maxLength={40} value={profile.city} onChange={e=>setProfile({...profile,city:e.target.value})}/></label><label>TA 的昵称<input name="partner-name" autoComplete="off" value={partnerProfile.name} readOnly aria-describedby="partner-permission-note"/></label><label>TA 共享的生日<input name="partner-birthday" autoComplete="off" value={partnerProfile.birthday||"未共享"} readOnly aria-describedby="partner-permission-note"/></label><p id="partner-permission-note" className="sheet-copy">TA 的个人资料只能由 TA 修改；这里仅展示 TA 主动共享的内容。</p><button className="primary-button" onClick={()=>{setPanel("");notify("我的资料已保存，并同步更新相关页面");}}>保存修改 <Arrow/></button></>}{panel==="cityEdit"&&<><p className="kicker">灵感城市</p><h2>这次想去哪里？</h2><label>城市<input name="inspiration-city" autoComplete="address-level2" maxLength={40} value={profile.city} onChange={e=>setProfile({...profile,city:e.target.value})}/></label>{!profile.city.trim()&&<p className="field-error" role="alert">请输入城市后再保存。</p>}<button className="primary-button" onClick={()=>{if(!profile.city.trim())return;setPanel("");notify("城市已更新，灵感条件已保留");}}>保存城市 <Arrow/></button></>}{panel==="normalExit"&&<><div className="danger-symbol">↗</div><p className="kicker">无需对方确认</p><h2>退出当前关系？</h2><p className="sheet-copy">共享权限会立即结束。你自己的内容与必要共同事实形成只读归档；对方撤回的内容会同步消失。</p><div className="risk-note"><b>不会提供退出前导出期</b><p>这样可以避免另一方在最后时刻批量保存敏感内容。</p></div><button className="danger-button" disabled={accountBusy} onClick={()=>void leaveRelationship(false)}>{accountBusy?"正在退出…":"确认独立退出"}</button><button className="ghost-button" disabled={accountBusy} onClick={()=>setPanel("")}>继续保留关系</button></>}{panel==="safetyExit"&&<><div className="danger-symbol">!</div><p className="kicker">立即保护</p><h2>退出并撤回敏感内容？</h2><div className="protection-mini"><p>✓ 无需 TA 同意</p><p>✓ 立即撤回我的敏感照片与文字</p><p>✓ 阻止继续查看、下载和批量导出</p><p>✓ 撤销历史文件链接后再通知 TA</p></div><p className="sheet-copy">平台无法远程删除对方此前的截屏或离线文件。举报详情不会出现在关系通知中。</p><button className="danger-button" disabled={accountBusy} onClick={()=>void leaveRelationship(true)}>{accountBusy?"正在保护并退出…":"立即退出并保护我的内容"}</button><button className="ghost-button" disabled={accountBusy} onClick={()=>setPanel("")}>取消</button></>}{panel==="reportSafety"&&<><div className="danger-symbol">!</div><p className="kicker">举报与证据保护</p><h2>发生了什么？</h2><div className="report-choices"><button className={reportReason==="骚扰或控制"?"selected":""} aria-pressed={reportReason==="骚扰或控制"} onClick={()=>setReportReason("骚扰或控制")}>骚扰或控制</button><button className={reportReason==="勒索或威胁"?"selected":""} aria-pressed={reportReason==="勒索或威胁"} onClick={()=>setReportReason("勒索或威胁")}>勒索或威胁</button><button className={reportReason==="亲密影像滥用"?"selected":""} aria-pressed={reportReason==="亲密影像滥用"} onClick={()=>setReportReason("亲密影像滥用")}>亲密影像滥用</button></div><p className="sheet-copy">提交后先停止相关内容传播与下载，再进入审核。撤回你自己的内容无需等待审核。</p><button className="danger-button" disabled={!reportReason||accountBusy} onClick={()=>void leaveRelationship(true)}>{accountBusy?"正在提交并保护…":"提交举报并立即保护"}</button><button className="ghost-button" disabled={accountBusy} onClick={()=>setPanel("")}>暂不提交</button></>}{panel==="clearData"&&<><div className="danger-symbol">!</div><h2>清空当前浏览器数据？</h2><p className="sheet-copy">将删除本机保存的资料、条件、安排、任务与回忆演示状态。公开网站本身不会被删除，且此操作无法撤销。</p><button className="danger-button" onClick={()=>{window.localStorage.removeItem("love-diary-v112");window.localStorage.removeItem("love-diary-v17");window.localStorage.removeItem("love-diary-v16");window.localStorage.removeItem("love-diary-v15");window.localStorage.removeItem("love-diary-v14");setPanel("");setHasStarted(false);setAdopted(false);setPartnerAccepted(false);setCompleted(false);setTaskAccepted(false);setTaskLinked(false);setMemoryCreated(false);setMemoryContentRetracted(false);setRelationshipExited(false);setSafetyExitUsed(false);setImportantAdded(false);history.current=[];go("welcome",true);}}>确认清空并重新开始</button><button className="ghost-button" onClick={()=>setPanel("")}>取消</button></>}</section></div>}
+      {panel && !["profileEdit","cityEdit","normalExit","safetyExit","reportSafety","clearData"].includes(panel) && <div className="modal-backdrop"><section ref={modalRef} className="bottom-sheet" role="dialog" aria-modal="true" aria-label="操作面板" tabIndex={-1}><div className="sheet-handle" aria-hidden="true"/><button type="button" className="sheet-close" onClick={() => setPanel("")} aria-label="关闭面板">×</button>{panel === "edit" && <><p className="kicker">编辑正式安排</p><h2>这已经是你们的安排</h2><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>setScheduleDraft({...scheduleDraft,title:e.target.value})}/></label><label>日期与时间<input required name="edit-date-time" type="datetime-local" autoComplete="off" value={`T`} onChange={e=>{const [date,time]=e.target.value.split("T");setScheduleDraft({...scheduleDraft,date,time});}}/></label><label>集合地点<input required name="meeting-place" autoComplete="off" value={meetingPlace} onChange={e=>setMeetingPlace(e.target.value)}/></label><button className="secondary-button node-edit" onClick={()=>notify("可新增、删除或调整节点顺序")}>管理行程节点</button><button className="primary-button" onClick={() => {setPartnerAccepted(false);setPanel("");notify("安排已更新，等待 TA 重新确认");}}>保存修改 <Arrow/></button></>}{panel === "cancel" && <><div className="danger-symbol">!</div><h2>{scheduleIsShared?"确定取消这个安排？":"确定删除这个计划？"}</h2><p className="sheet-copy">{scheduleIsShared?"取消后会保留记录；若关联任务，任务会解除关联但安排历史不会消失。":"删除后会从你的首页和日历中移除，且无法恢复。"}</p><button className="danger-button" disabled={scheduleBusy} onClick={() => {setCancelled(true);setTaskLinked(false);setPanel("");}}>{scheduleBusy?"正在处理…":scheduleIsShared?"确认取消":"确认删除"}</button><button className="ghost-button" disabled={scheduleBusy} onClick={() => setPanel("")}>{scheduleIsShared?"保留安排":"暂不删除"}</button></>}{panel === "memoryEdit" && <><p className="kicker">我的内容，由我管理</p><h2>补充一点真实细节</h2><button className={`photo-upload ${memoryPhoto&&!memoryContentRetracted ? "added" : ""}`} onClick={() => {setMemoryPhoto(true);setMemoryContentRetracted(false);}}><span>{memoryPhoto&&!memoryContentRetracted ? "✓" : "+"}</span>{memoryPhoto&&!memoryContentRetracted ? "已添加1张 · 由我上传" : "添加我的照片（最多9张）"}</button><label>回忆名称<input name="memory-title-edit" autoComplete="off" value={memoryDraft.title} onChange={e=>setMemoryDraft({...memoryDraft,title:e.target.value})}/></label><label>想留住的一句话<textarea name="memory-note" autoComplete="off" value={memoryNote} onChange={e => setMemoryNote(e.target.value)}/></label><p className="sheet-copy">照片和文字会标记为由你上传，可随时撤回；AI 不会自动覆盖。</p><button className="primary-button" onClick={() => {setMemoryContentRetracted(false);setPanel("");notify("我的内容已保存，并记录来源");}}>保存到回忆 <Arrow/></button></>}{panel === "retractMemory"&&<><div className="danger-symbol">↩</div><p className="kicker">撤回我的内容</p><h2>让对方也无法继续访问？</h2><p className="sheet-copy">你上传的照片和补充文字会从双方在线副本中移除；共同确认的日期、地点与活动仍作为各自历史事实保留。</p><div className="risk-note"><b>撤回不等于远程销毁</b><p>对方此前的截屏或离线导出文件无法由平台删除。</p></div><button className="danger-button" onClick={()=>{setMemoryContentRetracted(true);setPanel("");notify("个人内容已同步撤回，历史文件链接已失效");}}>撤回照片与个人文字</button><button className="ghost-button" onClick={()=>setPanel("")}>暂不撤回</button></>}{panel === "deleteMemory"&&<><div className="danger-symbol">!</div><h2>删除我的回忆副本？</h2><p className="sheet-copy">只会删除你看到的这条回忆，不会删除对方的副本。若要让对方也无法访问你上传的内容，请使用“管理来源与撤回”。</p><button className="danger-button" onClick={()=>{setMemoryDeleted(true);setPanel("");go("memories");}}>删除我的副本</button><button className="ghost-button" onClick={()=>setPanel("")}>取消</button></>}{panel === "calendarAdd"&&<><p className="kicker">添加到共同日历</p><h2>想记录什么？</h2><button className="sheet-choice" onClick={()=>{setPanel("");go("inspire");}}><span>＋</span><div><b>添加安排</b><p>手动创建，或先从灵感开始</p></div><i aria-hidden="true">›</i></button><button className="sheet-choice" onClick={()=>{setPanel("");go("importantCreate");}}><span>♡</span><div><b>添加重要日子</b><p>生日、纪念日或其他值得记住的日期</p></div><i aria-hidden="true">›</i></button></>}</section></div>}
+      {["profileEdit","cityEdit","normalExit","safetyExit","reportSafety","clearData"].includes(panel) && <div className="modal-backdrop"><section ref={modalRef} className="bottom-sheet" role="dialog" aria-modal="true" aria-label="确认操作" tabIndex={-1}><div className="sheet-handle" aria-hidden="true"/><button type="button" className="sheet-close" onClick={() => setPanel("")} aria-label="关闭面板">×</button>{panel==="profileEdit"&&<><p className="kicker">编辑我的资料</p><h2>每个人管理自己的资料</h2><label>昵称<input name="my-name" autoComplete="name" spellCheck={false} maxLength={30} value={profile.name} onChange={e=>{setProfile({...profile,name:e.target.value});setProfileError("");}}/></label><label>生日<input name="my-birthday" autoComplete="bday" inputMode="numeric" maxLength={20} value={profile.birthday} onChange={e=>setProfile({...profile,birthday:e.target.value})}/></label><label>当前城市<input name="city" autoComplete="address-level2" maxLength={40} value={profile.city} onChange={e=>setProfile({...profile,city:e.target.value})}/></label><label>TA 的昵称<input name="partner-name" autoComplete="off" value={partnerProfile.name} readOnly aria-describedby="partner-permission-note"/></label><label>TA 共享的生日<input name="partner-birthday" autoComplete="off" value={partnerProfile.birthday||"未共享"} readOnly aria-describedby="partner-permission-note"/></label><p id="partner-permission-note" className="sheet-copy">TA 的个人资料只能由 TA 修改；这里仅展示 TA 主动共享的内容。</p><button className="primary-button" disabled={accountBusy} onClick={()=>void saveProfileEdits()}>{accountBusy?"正在保存…":"保存修改"} <Arrow/></button></>}{panel==="cityEdit"&&<><p className="kicker">灵感城市</p><h2>这次想去哪里？</h2><label>城市<input name="inspiration-city" autoComplete="address-level2" maxLength={40} value={profile.city} onChange={e=>setProfile({...profile,city:e.target.value})}/></label>{!profile.city.trim()&&<p className="field-error" role="alert">请输入城市后再保存。</p>}<button className="primary-button" disabled={accountBusy} onClick={()=>{if(!profile.city.trim())return;setPanel("");void saveSelectedCity(profile.city);}}>保存城市 <Arrow/></button></>}{panel==="normalExit"&&<><div className="danger-symbol">↗</div><p className="kicker">无需对方确认</p><h2>退出当前关系？</h2><p className="sheet-copy">共享权限会立即结束。你自己的内容与必要共同事实形成只读归档；对方撤回的内容会同步消失。</p><div className="risk-note"><b>不会提供退出前导出期</b><p>这样可以避免另一方在最后时刻批量保存敏感内容。</p></div><button className="danger-button" disabled={accountBusy} onClick={()=>void leaveRelationship(false)}>{accountBusy?"正在退出…":"确认独立退出"}</button><button className="ghost-button" disabled={accountBusy} onClick={()=>setPanel("")}>继续保留关系</button></>}{panel==="safetyExit"&&<><div className="danger-symbol">!</div><p className="kicker">立即保护</p><h2>退出并撤回敏感内容？</h2><div className="protection-mini"><p>✓ 无需 TA 同意</p><p>✓ 立即撤回我的敏感照片与文字</p><p>✓ 阻止继续查看、下载和批量导出</p><p>✓ 撤销历史文件链接后再通知 TA</p></div><p className="sheet-copy">平台无法远程删除对方此前的截屏或离线文件。举报详情不会出现在关系通知中。</p><button className="danger-button" disabled={accountBusy} onClick={()=>void leaveRelationship(true)}>{accountBusy?"正在保护并退出…":"立即退出并保护我的内容"}</button><button className="ghost-button" disabled={accountBusy} onClick={()=>setPanel("")}>取消</button></>}{panel==="reportSafety"&&<><div className="danger-symbol">!</div><p className="kicker">举报与证据保护</p><h2>发生了什么？</h2><div className="report-choices"><button className={reportReason==="骚扰或控制"?"selected":""} aria-pressed={reportReason==="骚扰或控制"} onClick={()=>setReportReason("骚扰或控制")}>骚扰或控制</button><button className={reportReason==="勒索或威胁"?"selected":""} aria-pressed={reportReason==="勒索或威胁"} onClick={()=>setReportReason("勒索或威胁")}>勒索或威胁</button><button className={reportReason==="亲密影像滥用"?"selected":""} aria-pressed={reportReason==="亲密影像滥用"} onClick={()=>setReportReason("亲密影像滥用")}>亲密影像滥用</button></div><p className="sheet-copy">提交后先停止相关内容传播与下载，再进入审核。撤回你自己的内容无需等待审核。</p><button className="danger-button" disabled={!reportReason||accountBusy} onClick={()=>void leaveRelationship(true)}>{accountBusy?"正在提交并保护…":"提交举报并立即保护"}</button><button className="ghost-button" disabled={accountBusy} onClick={()=>setPanel("")}>暂不提交</button></>}{panel==="clearData"&&<><div className="danger-symbol">!</div><h2>清空本机会话？</h2><p className="sheet-copy">只会删除当前浏览器里的灵感草稿、显示偏好与旧版本快照；账户资料和服务端安排不会删除。</p><button className="danger-button" onClick={clearLocalSession}>确认清空本机会话</button><button className="ghost-button" onClick={()=>setPanel("")}>取消</button></>}</section></div>}
       {birthdayPickerOpen && <BirthdayCalendar value={profile.birthday} onConfirm={value=>{setProfile({...profile,birthday:value});setBirthdayPickerOpen(false);}} onClose={()=>setBirthdayPickerOpen(false)}/>} 
       {cityPickerOpen && <CityPicker value={profile.city} onConfirm={value=>{void saveSelectedCity(value);setCityPickerOpen(false);}} onClose={()=>setCityPickerOpen(false)}/>}
       <div className="toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="toast">{toast}</div>}</div>

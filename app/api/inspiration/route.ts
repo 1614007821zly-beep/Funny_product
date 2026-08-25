@@ -1,3 +1,8 @@
+import { env } from "cloudflare:workers";
+import { getChatGPTUser } from "../../chatgpt-auth";
+
+export const dynamic = "force-dynamic";
+
 type InspirationRequest = {
   city?: string;
   moods?: string[];
@@ -37,13 +42,18 @@ type GeneratedPlan = {
   places?: AmapPlace[];
 };
 
-const rateLimits = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 6;
-const WINDOW_MS = 60_000;
+const MINUTE_LIMIT = 6;
+const DAILY_LIMIT = 50;
+const CIRCUIT_FAILURE_THRESHOLD = 3;
+const CIRCUIT_OPEN_MS = 5 * 60_000;
 
 export async function POST(request: Request) {
-  const clientId = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
-  if (!takeRateLimit(clientId)) return json({ error: "请求过于频繁，请稍后再试。", code: "RATE_LIMITED" }, 429);
+  const identity = await getChatGPTUser();
+  if (!identity) return json({ error: "请先登录后再获取 AI 灵感。", code: "AUTH_REQUIRED" }, 401);
+
+  const aiHubMixKey = process.env.AIHUBMIX_API_KEY;
+  const amapKey = process.env.AMAP_WEB_SERVICE_KEY;
+  if (!aiHubMixKey) return json({ error: "AI 服务尚未配置，请联系网站管理员。", code: "AI_NOT_CONFIGURED" }, 503);
 
   let input: InspirationRequest;
   try {
@@ -54,25 +64,30 @@ export async function POST(request: Request) {
 
   const safeInput = sanitizeInput(input);
   if (!safeInput.city) return json({ error: "请先填写城市。", code: "CITY_REQUIRED" }, 400);
-  if (containsContactDetails(safeInput.special)) {
-    return json({ error: "特殊要求中请勿填写手机号、邮箱等联系方式。", code: "SENSITIVE_INPUT" }, 400);
+  if (containsContactDetails(Object.values(safeInput).flat().join(" "))) {
+    return json({ error: "灵感条件中请勿填写手机号、邮箱等联系方式。", code: "SENSITIVE_INPUT" }, 400);
   }
 
-  const aiHubMixKey = process.env.AIHUBMIX_API_KEY;
-  const amapKey = process.env.AMAP_WEB_SERVICE_KEY;
-  if (!aiHubMixKey) return json({ error: "AI 服务尚未配置，请联系网站管理员。", code: "AI_NOT_CONFIGURED" }, 503);
+  const clientIp = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const limit = await takeUsageLimit(identity.userId, clientIp);
+  if (limit === "minute") return json({ error: "请求过于频繁，请稍后再试。", code: "RATE_LIMITED" }, 429);
+  if (limit === "daily") return json({ error: "今天的 AI 灵感次数已用完，请明天再试。", code: "DAILY_LIMITED" }, 429);
+  if (!await circuitAllowsRequest()) return json({ error: "AI 服务正在短暂恢复，请几分钟后再试。", code: "AI_CIRCUIT_OPEN" }, 503);
 
+  let plans: GeneratedPlan[];
   try {
-    const plans = await generatePlans(aiHubMixKey, safeInput);
-    const enriched = await Promise.all(plans.map(async plan => ({
-      ...plan,
-      places: amapKey ? await searchAmapPlaces(amapKey, safeInput, plan.placeQuery) : [],
-    })));
-    return json({ plans: enriched, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置" } });
+    plans = await generatePlans(aiHubMixKey, safeInput);
+    await recordCircuitSuccess().catch(() => undefined);
   } catch (error) {
+    await recordCircuitFailure().catch(() => undefined);
     console.error("Inspiration generation failed", error instanceof Error ? error.message : "unknown error");
     return json({ error: "灵感暂时没有生成成功，请稍后重试。", code: "GENERATION_FAILED" }, 502);
   }
+  const enriched = await Promise.all(plans.map(async plan => ({
+    ...plan,
+    places: amapKey ? await searchAmapPlaces(amapKey, safeInput, plan.placeQuery).catch(() => []) : [],
+  })));
+  return json({ plans: enriched, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置" } });
 }
 
 async function generatePlans(apiKey: string, input: Required<InspirationRequest>): Promise<GeneratedPlan[]> {
@@ -189,13 +204,67 @@ function validatePlan(plan: GeneratedPlan): GeneratedPlan {
   };
 }
 
-function takeRateLimit(id: string) {
+async function takeUsageLimit(userId: string, clientIp: string): Promise<"ok" | "minute" | "daily"> {
   const now = Date.now();
-  const current = rateLimits.get(id);
-  if (!current || current.resetAt <= now) { rateLimits.set(id, { count: 1, resetAt: now + WINDOW_MS }); return true; }
-  if (current.count >= RATE_LIMIT) return false;
-  current.count += 1;
+  const minuteWindow = Math.floor(now / 60_000);
+  const dailyWindow = Number(shanghaiDate().replaceAll("-", ""));
+  const minuteCount = await incrementUsage(userId, "minute", `${userId}:${clientIp}`, minuteWindow);
+  if (minuteCount > MINUTE_LIMIT) return "minute";
+  const dailyCount = await incrementUsage(userId, "daily", userId, dailyWindow);
+  return dailyCount > DAILY_LIMIT ? "daily" : "ok";
+}
+
+async function incrementUsage(userId: string, bucket: "minute" | "daily", identity: string, window: number) {
+  const keyHash = await digest(`${bucket}:${identity}`);
+  const now = new Date().toISOString();
+  const row = await env.DB.prepare(`INSERT INTO ai_usage_limits
+    (key_hash,user_id,bucket,window_started_at,request_count,updated_at)
+    VALUES (?,?,?,?,1,?)
+    ON CONFLICT(key_hash) DO UPDATE SET
+      request_count=CASE WHEN window_started_at<>excluded.window_started_at THEN 1 ELSE request_count+1 END,
+      window_started_at=excluded.window_started_at,
+      updated_at=excluded.updated_at
+    RETURNING request_count`)
+    .bind(keyHash, userId, bucket, window, now).first<{ request_count: number }>();
+  return row?.request_count ?? 1;
+}
+
+async function circuitAllowsRequest() {
+  const state = await env.DB.prepare("SELECT failure_count,opened_until FROM ai_service_state WHERE id='inspiration'")
+    .first<{ failure_count: number; opened_until: string | null }>();
+  if (!state?.opened_until) return true;
+  if (state.opened_until > new Date().toISOString()) return false;
+  await recordCircuitSuccess();
   return true;
+}
+
+async function recordCircuitSuccess() {
+  const now = new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO ai_service_state (id,failure_count,opened_until,updated_at)
+    VALUES ('inspiration',0,NULL,?)
+    ON CONFLICT(id) DO UPDATE SET failure_count=0,opened_until=NULL,updated_at=excluded.updated_at`)
+    .bind(now).run();
+}
+
+async function recordCircuitFailure() {
+  const now = new Date();
+  const openedUntil = new Date(now.getTime() + CIRCUIT_OPEN_MS).toISOString();
+  await env.DB.prepare(`INSERT INTO ai_service_state (id,failure_count,opened_until,updated_at)
+    VALUES ('inspiration',1,NULL,?)
+    ON CONFLICT(id) DO UPDATE SET
+      opened_until=CASE WHEN failure_count+1>=? THEN ? ELSE opened_until END,
+      failure_count=failure_count+1,
+      updated_at=excluded.updated_at`)
+    .bind(now.toISOString(), CIRCUIT_FAILURE_THRESHOLD, openedUntil).run();
+}
+
+async function digest(value: string) {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function shanghaiDate() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 }
 
 function clean(value: unknown, maxLength: number) { return typeof value === "string" ? Array.from(value.trim(), character => character.charCodeAt(0) < 32 ? " " : character).join("").slice(0, maxLength) : ""; }

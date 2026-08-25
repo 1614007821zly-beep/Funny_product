@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -62,3 +62,49 @@ export const sharedSchedules = sqliteTable("shared_schedules", {
   index("idx_shared_schedules_relationship_status").on(table.relationshipId, table.status),
   index("idx_shared_schedules_relationship_date").on(table.relationshipId, table.eventDate),
 ]);
+
+// `shared_schedules` is retained for a reversible migration. New reads and
+// writes use this unified table so personal and shared plans have one durable
+// source of truth.
+export const schedules = sqliteTable("schedules", {
+  id: text("id").primaryKey(),
+  relationshipId: text("relationship_id").references(() => relationships.id),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id),
+  acceptedByUserId: text("accepted_by_user_id").references(() => users.id),
+  visibility: text("visibility").notNull(),
+  title: text("title").notNull(),
+  eventDate: text("event_date").notNull(),
+  eventTime: text("event_time").notNull(),
+  city: text("city").notNull(),
+  status: text("status").notNull(),
+  source: text("source").notNull().default("manual"),
+  sourceReference: text("source_reference"),
+  factsJson: text("facts_json").notNull().default("{}"),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  deletedAt: text("deleted_at"),
+}, table => [
+  index("idx_schedules_owner_date").on(table.createdByUserId, table.eventDate),
+  index("idx_schedules_relationship_date").on(table.relationshipId, table.eventDate),
+  index("idx_schedules_relationship_status").on(table.relationshipId, table.status),
+  uniqueIndex("idx_schedules_owner_source_reference").on(table.createdByUserId, table.sourceReference),
+]);
+
+export const aiUsageLimits = sqliteTable("ai_usage_limits", {
+  keyHash: text("key_hash").primaryKey(),
+  userId: text("user_id").notNull(),
+  bucket: text("bucket").notNull(),
+  windowStartedAt: integer("window_started_at").notNull(),
+  requestCount: integer("request_count").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, table => [
+  index("idx_ai_usage_limits_user_bucket").on(table.userId, table.bucket),
+]);
+
+export const aiServiceState = sqliteTable("ai_service_state", {
+  id: text("id").primaryKey(),
+  failureCount: integer("failure_count").notNull().default(0),
+  openedUntil: text("opened_until"),
+  updatedAt: text("updated_at").notNull(),
+});
