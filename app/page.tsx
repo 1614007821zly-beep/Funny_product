@@ -52,6 +52,7 @@ export default function Home() {
   const [account, setAccount] = useState<AccountSnapshot | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
   const [sharedSchedule, setSharedSchedule] = useState<ScheduleRecord | null>(null);
+  const [scheduleLoaded, setScheduleLoaded] = useState(false);
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [legacyPlan, setLegacyPlan] = useState<LegacyPlan | null>(null);
   const [onboardingIntent, setOnboardingIntent] = useState<"solo" | "invite" | "join">("solo");
@@ -153,8 +154,11 @@ export default function Home() {
     try {
       const response = await fetch("/api/account", { cache: "no-store" });
       const data = await response.json() as AccountSnapshot;
-      if (response.status === 401) { setAccount({ authenticated: false }); setSharedSchedule(null); setAdopted(false); return null; }
+      if (response.status === 401) { setAccount({ authenticated: false }); setSharedSchedule(null); setScheduleLoaded(true); setAdopted(false); return null; }
       if (!response.ok) throw new Error("账号状态读取失败");
+      if (account?.user?.id && data.user?.id && account.user.id !== data.user.id) {
+        setSharedSchedule(null); setScheduleLoaded(false); setAdopted(false);
+      }
       setAccount(data);
       if (data.user) setProfile({ name: data.user.nickname, birthday: dateFieldValue(data.user.birthday), city: data.user.city });
       setInviteCodeValue(data.invite?.code ?? "");
@@ -195,6 +199,7 @@ export default function Home() {
         setCompleted(false); setMyConfirmed(false); setTaConfirmed(false);
       } else if (account?.authenticated) { setAdopted(false); setPartnerAccepted(false); }
     } catch { if (!silent) notify("安排同步失败，请稍后重试"); }
+    finally { setScheduleLoaded(true); }
   }
   async function createSharedSchedule() {
     const title = (scheduleDraft.title || currentPlan.title).trim(); const city = (scheduleDraft.city || profile.city).trim();
@@ -695,7 +700,22 @@ export default function Home() {
 
             {screen === "confirm" && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>{hasRelationship?"确认安排":"保存我的计划"}</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>{hasRelationship?<>发给 TA，<br/>一起决定。</>:<>先为自己，<br/>保存这个计划。</>}</h2><p className="confirm-copy">{hasRelationship?"你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”。":"计划默认仅自己可见；以后邀请 TA 时，也不会自动共享。"}</p></section><section className="confirm-card"><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>{setScheduleDraft({...scheduleDraft,title:e.target.value});setFormError("");}}/></label><label>日期<input required name="schedule-date" type="date" autoComplete="off" value={scheduleDraft.date} onChange={e=>{setScheduleDraft({...scheduleDraft,date:e.target.value});setFormError("");}}/></label><label>开始时间<input required name="schedule-time" type="time" autoComplete="off" value={scheduleDraft.time} onChange={e=>{setScheduleDraft({...scheduleDraft,time:e.target.value});setFormError("");}}/></label><label>所在城市<input required name="schedule-city" autoComplete="address-level2" value={scheduleDraft.city || profile.city} onChange={e=>{setScheduleDraft({...scheduleDraft,city:e.target.value});setFormError("");}}/></label></section>{formError&&<p className="field-error" role="alert">{formError}</p>}{taskAccepted && <section className="link-context"><span>♫</span><div><b>关联情侣任务</b><p>交换一首最近常听的歌</p></div><em>{hasRelationship?"TA 接受后关联":"保存在我的计划中"}</em></section>}<button className="primary-button" disabled={scheduleBusy} onClick={()=>hasRelationship?void createSharedSchedule():void savePersonalPlan()}>{scheduleBusy?"正在保存…":hasRelationship?"发给 TA 确认":"保存到我的计划"} <Arrow/></button>{!hasRelationship&&<button className="ghost-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定</button>}<button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
 
-            {screen === "schedule" && (
+            {screen === "schedule" && !scheduleLoaded && (
+              <div className="page formal-page schedule-page">
+                <header><Back onClick={() => back("calendar")}/><span>安排详情</span><i aria-hidden="true"/></header>
+                <section className="empty-formal" role="status"><span>◌</span><h2>正在同步计划</h2><p>从你的账户读取最新内容，请稍候。</p></section>
+              </div>
+            )}
+
+            {screen === "schedule" && scheduleLoaded && !sharedSchedule && (
+              <div className="page formal-page schedule-page">
+                <header><Back onClick={() => back("calendar")}/><span>安排详情</span><i aria-hidden="true"/></header>
+                <section className="empty-formal"><span>◌</span><h2>没有可查看的计划</h2><p>这条计划可能已被删除，或尚未保存到你的账户。</p><button className="primary-button" onClick={() => go("calendar")}>返回日历 <Arrow/></button></section>
+                {bottomNav("calendar")}
+              </div>
+            )}
+
+            {screen === "schedule" && scheduleLoaded && sharedSchedule && (
               <div className="page schedule-page">
                 <header><Back onClick={() => back("calendar")}/><span>安排详情</span><button className="text-button" onClick={() => setPanel("edit")}>编辑</button></header>
                 <div className={`confirmation ${cancelled ? "is-cancelled" : ""} ${scheduleIsShared&&!partnerAccepted&&!cancelled?"is-pending":""}`}><span>{cancelled ? "×" : scheduleIsShared&&!partnerAccepted ? "◷" : "✓"}</span><p>{cancelled ? "安排已取消" : !scheduleIsShared ? "我的计划 · 仅自己可见" : !partnerAccepted ? "等待 TA 接受" : completed ? "双方已确认完成" : "双方已接受 · 正式安排"}</p></div>
