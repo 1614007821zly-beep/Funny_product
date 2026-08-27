@@ -44,5 +44,5 @@ export async function POST(request: Request) {
   const body = await request.json() as ProfileInput;
   const identity = await ensureUser(body);
   if (!identity) return Response.json({ error: "请先登录后再保存资料。" }, { status: 401 });
-  return Response.json({ ok: true, ...(await accountSnapshot(identity.userId)) });
+  return Response.json({ ok: true, authenticated: true, ...(await accountSnapshot(identity.userId)) });
 }

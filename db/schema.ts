@@ -146,3 +146,51 @@ export const aiServiceState = sqliteTable("ai_service_state", {
   openedUntil: text("opened_until"),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const userPreferences = sqliteTable("user_preferences", {
+  userId: text("user_id").primaryKey().references(() => users.id),
+  scheduleReminders: integer("schedule_reminders", { mode: "boolean" }).notNull().default(true),
+  importantDayReminders: integer("important_day_reminders", { mode: "boolean" }).notNull().default(true),
+  partnerUpdates: integer("partner_updates", { mode: "boolean" }).notNull().default(true),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const feedbackEntries = sqliteTable("feedback_entries", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  category: text("category").notNull(),
+  message: text("message").notNull(),
+  status: text("status").notNull().default("open"),
+  createdAt: text("created_at").notNull(),
+}, table => [index("idx_feedback_entries_user_created").on(table.userId, table.createdAt)]);
+
+export const scheduleShareLinks = sqliteTable("schedule_share_links", {
+  id: text("id").primaryKey(),
+  scheduleId: text("schedule_id").notNull().references(() => schedules.id),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  revokedAt: text("revoked_at"),
+  createdAt: text("created_at").notNull(),
+}, table => [
+  uniqueIndex("idx_schedule_share_links_token").on(table.tokenHash),
+  index("idx_schedule_share_links_creator").on(table.createdByUserId, table.revokedAt),
+]);
+
+export const userMedia = sqliteTable("user_media", {
+  id: text("id").primaryKey(),
+  ownerUserId: text("owner_user_id").notNull().references(() => users.id),
+  relationshipId: text("relationship_id").references(() => relationships.id),
+  objectKey: text("object_key").notNull(),
+  purpose: text("purpose").notNull().default("memory"),
+  contentType: text("content_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  visibility: text("visibility").notNull().default("personal"),
+  status: text("status").notNull().default("active"),
+  createdAt: text("created_at").notNull(),
+  retractedAt: text("retracted_at"),
+}, table => [
+  uniqueIndex("idx_user_media_object_key").on(table.objectKey),
+  index("idx_user_media_owner_status").on(table.ownerUserId, table.status),
+  index("idx_user_media_relationship_status").on(table.relationshipId, table.status),
+]);
