@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V1.15 experience", async () => {
+test("server-renders the Love Diary V1.16 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V1\.15/);
+  assert.match(html, /<title>恋爱日记 V1\.16/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -30,7 +30,7 @@ test("server-renders the Love Diary V1.15 experience", async () => {
 });
 
 test("keeps accessibility and interaction safeguards in source", async () => {
-  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, historySharingApi, schedulesApi, schema, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration, historySharingMigration] = await Promise.all([
+  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, historySharingApi, schedulesApi, importantDaysApi, tasksApi, schema, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration, historySharingMigration, sharedExperienceMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -41,11 +41,14 @@ test("keeps accessibility and interaction safeguards in source", async () => {
     readFile(new URL("../app/api/relationship/leave/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/relationship/history-sharing/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/schedules/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/important-days/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/tasks/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0002_release_ended_relationships.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0003_rainy_saracen.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0004_fuzzy_beyonder.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0005_acoustic_ben_grimm.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0006_lowly_mastermind.sql", import.meta.url), "utf8"),
   ]);
 
   assert.match(layout, /className="skip-link"/);
@@ -161,6 +164,22 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(unifiedScheduleMigration, /FROM `shared_schedules`/);
   assert.match(historySharingMigration, /ADD `history_sharing_mode`/);
   assert.match(historySharingMigration, /ADD `history_sharing_reviewed_at`/);
+  assert.match(page, /partnerMood: hasRelationship \? choices\.taMood : undefined/);
+  assert.match(page, /hasRelationship&&<Choice title="TA 呢？"/);
+  assert.match(page, /fetch\("\/api\/tasks"/);
+  assert.match(page, /fetch\("\/api\/important-days"/);
+  assert.match(page, /共同体验预览/);
+  assert.match(tasksApi, /completion_pending/);
+  assert.match(tasksApi, /completion_requested_by_user_id === identity\.userId/);
+  assert.match(tasksApi, /INSERT OR IGNORE INTO relationship_tasks/);
+  assert.match(importantDaysApi, /visibility === "shared"/);
+  assert.match(importantDaysApi, /pending_partner/);
+  assert.match(importantDaysApi, /version=version\+1/);
+  assert.match(schema, /export const importantDays/);
+  assert.match(schema, /export const relationshipTasks/);
+  assert.match(sharedExperienceMigration, /CREATE TABLE `important_days`/);
+  assert.match(sharedExperienceMigration, /CREATE TABLE `relationship_tasks`/);
+  assert.match(sharedExperienceMigration, /idx_relationship_tasks_one_open/);
   assert.match(page, /window\.sessionStorage\.setItem\(INSPIRATION_DRAFT_KEY/);
   assert.match(page, /window\.history\.replaceState\(\{ screen: initialScreen \}, "", `#\$\{initialScreen\}`\)/);
   assert.doesNotMatch(page, /new URLSearchParams/);

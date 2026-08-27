@@ -93,6 +93,42 @@ export const schedules = sqliteTable("schedules", {
   uniqueIndex("idx_schedules_owner_source_reference").on(table.createdByUserId, table.sourceReference),
 ]);
 
+export const importantDays = sqliteTable("important_days", {
+  id: text("id").primaryKey(),
+  relationshipId: text("relationship_id").references(() => relationships.id),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id),
+  acceptedByUserId: text("accepted_by_user_id").references(() => users.id),
+  visibility: text("visibility").notNull(),
+  title: text("title").notNull(),
+  eventDate: text("event_date").notNull(),
+  repeatRule: text("repeat_rule").notNull().default("yearly"),
+  reminderDays: integer("reminder_days").notNull().default(7),
+  status: text("status").notNull(),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  deletedAt: text("deleted_at"),
+}, table => [
+  index("idx_important_days_owner_date").on(table.createdByUserId, table.eventDate),
+  index("idx_important_days_relationship_date").on(table.relationshipId, table.eventDate),
+]);
+
+export const relationshipTasks = sqliteTable("relationship_tasks", {
+  id: text("id").primaryKey(),
+  relationshipId: text("relationship_id").notNull().references(() => relationships.id),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id),
+  acceptedByUserId: text("accepted_by_user_id").references(() => users.id),
+  completionRequestedByUserId: text("completion_requested_by_user_id").references(() => users.id),
+  title: text("title").notNull(),
+  status: text("status").notNull(),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, table => [
+  index("idx_relationship_tasks_relationship_status").on(table.relationshipId, table.status),
+  uniqueIndex("idx_relationship_tasks_one_open").on(table.relationshipId).where(sql`${table.status} in ('pending_partner','active','completion_pending')`),
+]);
+
 export const aiUsageLimits = sqliteTable("ai_usage_limits", {
   keyHash: text("key_hash").primaryKey(),
   userId: text("user_id").notNull(),
