@@ -39,7 +39,7 @@ async function activeRelationship(userId: string) {
     .bind(userId).first<Membership>();
 }
 
-export async function GET() {
+async function getImportantDays() {
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录。" }, 401);
   const membership = await activeRelationship(identity.userId);
@@ -50,10 +50,10 @@ export async function GET() {
     : env.DB.prepare(`${columns()} FROM important_days WHERE deleted_at IS NULL AND status<>'cancelled'
         AND visibility='personal' AND created_by_user_id=? ORDER BY event_date ASC,updated_at DESC LIMIT 100`).bind(identity.userId);
   const result = await query.all<StoredImportantDay>();
-  return json({ importantDays: result.results ?? [] });
+  return json({ importantDays: result.results ?? [], available: true });
 }
 
-export async function POST(request: Request) {
+async function createImportantDay(request: Request) {
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录后再添加重要日子。" }, 401);
   let body: Input;
@@ -80,7 +80,7 @@ export async function POST(request: Request) {
   return json({ importantDay }, 201);
 }
 
-export async function PATCH(request: Request) {
+async function updateImportantDay(request: Request) {
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录。" }, 401);
   let body: Input;
@@ -122,4 +122,8 @@ function columns() {
 }
 function clean(value: unknown, max: number) { return typeof value === "string" ? Array.from(value.trim(), character => character.charCodeAt(0) < 32 ? " " : character).join("").slice(0, max) : ""; }
 function validDate(value: string) { if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false; const date = new Date(`${value}T12:00:00Z`); return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value; }
+function schemaPending(error: unknown) { return error instanceof Error && /no such table:\s*important_days/i.test(error.message); }
+export async function GET() { try { return await getImportantDays(); } catch (error) { if (schemaPending(error)) return json({ importantDays: [], available: false }); throw error; } }
+export async function POST(request: Request) { try { return await createImportantDay(request); } catch (error) { if (schemaPending(error)) return json({ error: "重要日子将在第四阶段完成后启用。", available: false }, 503); throw error; } }
+export async function PATCH(request: Request) { try { return await updateImportantDay(request); } catch (error) { if (schemaPending(error)) return json({ error: "重要日子将在第四阶段完成后启用。", available: false }, 503); throw error; } }
 function json(body: unknown, status = 200) { return Response.json(body, { status, headers: { "cache-control": "no-store" } }); }

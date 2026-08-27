@@ -25,7 +25,7 @@ async function activeRelationship(userId: string) {
     .bind(userId).first<Membership>();
 }
 
-export async function GET() {
+async function getTasks() {
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录。" }, 401);
   const membership = await activeRelationship(identity.userId);
@@ -34,10 +34,10 @@ export async function GET() {
     ORDER BY CASE WHEN status IN ('pending_partner','active','completion_pending') THEN 0 ELSE 1 END,updated_at DESC LIMIT 50`)
     .bind(membership.relationship_id).all<StoredTask>();
   const tasks = result.results ?? [];
-  return json({ task: tasks.find(task => !["completed", "cancelled"].includes(task.status)) ?? null, tasks });
+  return json({ task: tasks.find(task => !["completed", "cancelled"].includes(task.status)) ?? null, tasks, available: true });
 }
 
-export async function POST(request: Request) {
+async function createTask(request: Request) {
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录后再发起共同任务。" }, 401);
   const membership = await activeRelationship(identity.userId);
@@ -64,7 +64,7 @@ export async function POST(request: Request) {
   return json({ task, existing: task?.id !== id }, task?.id === id ? 201 : 200);
 }
 
-export async function PATCH(request: Request) {
+async function updateTask(request: Request) {
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录。" }, 401);
   const membership = await activeRelationship(identity.userId);
@@ -105,4 +105,8 @@ export async function PATCH(request: Request) {
 
 function columns() { return "SELECT id,relationship_id,created_by_user_id,accepted_by_user_id,completion_requested_by_user_id,title,status,version,created_at,updated_at"; }
 function clean(value: unknown, max: number) { return typeof value === "string" ? Array.from(value.trim(), character => character.charCodeAt(0) < 32 ? " " : character).join("").slice(0, max) : ""; }
+function schemaPending(error: unknown) { return error instanceof Error && /no such table:\s*relationship_tasks/i.test(error.message); }
+export async function GET() { try { return await getTasks(); } catch (error) { if (schemaPending(error)) return json({ task: null, tasks: [], available: false }); throw error; } }
+export async function POST(request: Request) { try { return await createTask(request); } catch (error) { if (schemaPending(error)) return json({ error: "共同任务将在第四阶段完成后启用。", available: false }, 503); throw error; } }
+export async function PATCH(request: Request) { try { return await updateTask(request); } catch (error) { if (schemaPending(error)) return json({ error: "共同任务将在第四阶段完成后启用。", available: false }, 503); throw error; } }
 function json(body: unknown, status = 200) { return Response.json(body, { status, headers: { "cache-control": "no-store" } }); }

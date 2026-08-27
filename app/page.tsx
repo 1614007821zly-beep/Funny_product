@@ -78,6 +78,7 @@ export default function Home() {
   const [importantDraft, setImportantDraft] = useState(() => ({ title: "在一起纪念日", date: dateInputValue(63), repeatRule: "yearly" as "yearly" | "none", reminderDays: 7 }));
   const [formError, setFormError] = useState("");
   const [importantDays, setImportantDays] = useState<ImportantDayRecord[]>([]);
+  const [sharedExperiencesAvailable, setSharedExperiencesAvailable] = useState(true);
   const [importantBusy, setImportantBusy] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState(0);
   const [adopted, setAdopted] = useState(false);
@@ -231,13 +232,15 @@ export default function Home() {
         fetch("/api/important-days", { cache: "no-store" }),
       ]);
       if (taskResponse.status === 401 || importantResponse.status === 401) return;
-      const taskData = await taskResponse.json() as { task?: TaskRecord | null; tasks?: TaskRecord[]; error?: string };
-      const importantData = await importantResponse.json() as { importantDays?: ImportantDayRecord[]; error?: string };
+      const taskData = await taskResponse.json() as { task?: TaskRecord | null; tasks?: TaskRecord[]; available?: boolean; error?: string };
+      const importantData = await importantResponse.json() as { importantDays?: ImportantDayRecord[]; available?: boolean; error?: string };
       if (!taskResponse.ok || !importantResponse.ok) throw new Error(taskData.error || importantData.error || "共同内容读取失败。");
+      setSharedExperiencesAvailable(taskData.available !== false && importantData.available !== false);
       setTaskRecord(taskData.task ?? null); setTasks(taskData.tasks ?? []); setImportantDays(importantData.importantDays ?? []);
     } catch { if (!silent) notify("任务与重要日子同步失败，请稍后重试"); }
   }
   async function createImportantDay() {
+    if (!sharedExperiencesAvailable) { setFormError("重要日子将在第四阶段完成后启用。"); return; }
     if (!importantDraft.title.trim() || !importantDraft.date) { setFormError("请填写重要日子的名称和日期。"); return; }
     setImportantBusy(true); setFormError("");
     try {
@@ -250,6 +253,7 @@ export default function Home() {
     finally { setImportantBusy(false); }
   }
   async function acceptImportantDay(id: string) {
+    if (!sharedExperiencesAvailable) { notify("重要日子将在第四阶段完成后启用"); return; }
     setImportantBusy(true);
     try {
       const response = await fetch("/api/important-days", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, action: "accept" }) });
@@ -260,6 +264,7 @@ export default function Home() {
     finally { setImportantBusy(false); }
   }
   async function startSharedTask() {
+    if (!sharedExperiencesAvailable) { notify("共同任务将在第四阶段完成后启用"); return; }
     if (!hasRelationship) { setOnboardingIntent("invite"); go("connect"); return; }
     setTaskBusy(true);
     try {
@@ -271,6 +276,7 @@ export default function Home() {
     finally { setTaskBusy(false); }
   }
   async function updateSharedTask(action: "accept" | "request_complete" | "confirm_complete" | "cancel") {
+    if (!sharedExperiencesAvailable) { notify("共同任务将在第四阶段完成后启用"); return; }
     if (!taskRecord) return;
     setTaskBusy(true);
     try {
