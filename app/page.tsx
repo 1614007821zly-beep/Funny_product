@@ -871,13 +871,13 @@ export default function Home() {
     <main className="prototype-shell" id="main-content">
       <aside className="prototype-notes">
         <div className="brand-mark">日</div>
-        <p className="kicker">恋爱日记 · V1.16 单人与共同体验</p>
+        <p className="kicker">恋爱日记 · V1.17 单人与共同体验</p>
         <h1>把一起生活的<br/>小事，好好留下。</h1>
         <p className="intro">从一个轻松的约会灵感开始，经过双方确认，成为共同安排，最后自然沉淀为回忆。</p>
         <ol className="journey" aria-label="体验流程">
           {["相遇", "我们", "灵感", "计划", "安排", "日历", "回忆"].map((label, i) => <li key={label} className={step >= i + 1 ? "done" : ""} aria-current={step === i + 1 ? "step" : undefined}><i aria-hidden="true">{step > i + 1 ? "✓" : i + 1}</i><span>{label}</span></li>)}
         </ol>
-        <p className="hint">V1.16 单人内容默认私密；共同任务和重要日子必须由双方确认。</p>
+        <p className="hint">V1.17 单人内容默认私密；共同任务和重要日子必须由双方确认。</p>
       </aside>
 
       <section className="phone-stage">
