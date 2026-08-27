@@ -3,7 +3,7 @@ import { getChatGPTUser, type ChatGPTUser } from "../../chatgpt-auth";
 
 export const dynamic = "force-dynamic";
 
-type ScheduleAction = "accept" | "cancel" | "delete" | "update";
+type ScheduleAction = "accept" | "cancel" | "delete" | "update" | "share";
 type ScheduleVisibility = "personal" | "shared";
 type ScheduleSource = "manual" | "ai" | "legacy_import";
 type ScheduleInput = {
@@ -135,7 +135,7 @@ export async function PATCH(request: Request) {
   } catch {
     return json({ error: "请求内容不是有效的 JSON。" }, 400);
   }
-  if (!body.id || !["accept", "cancel", "delete", "update"].includes(body.action ?? "")) {
+  if (!body.id || !["accept", "cancel", "delete", "update", "share"].includes(body.action ?? "")) {
     return json({ error: "不支持的操作。" }, 400);
   }
 
@@ -147,6 +147,17 @@ export async function PATCH(request: Request) {
   if (!ownsPersonal && !belongsToRelationship) return json({ error: "你无权操作这个安排。" }, 403);
 
   const now = new Date().toISOString();
+  if (body.action === "share") {
+    if (!ownsPersonal) return json({ error: "只能分享自己的个人计划。" }, 403);
+    if (!membership) return json({ error: "请先建立关系后再发送给 TA。" }, 409);
+    const result = await env.DB.prepare(`UPDATE schedules SET visibility='shared',relationship_id=?,status='pending_partner',
+      accepted_by_user_id=NULL,updated_at=?,version=version+1 WHERE id=? AND version=? AND visibility='personal' AND deleted_at IS NULL`)
+      .bind(membership.relationship_id, now, schedule.id, schedule.version).run();
+    if (!result.meta.changes) return json({ error: "计划刚刚已被更新，请刷新后重试。" }, 409);
+    const updated = await env.DB.prepare(`${scheduleColumns()} FROM schedules WHERE id=?`).bind(schedule.id).first<StoredSchedule>();
+    return json({ schedule: updated });
+  }
+
   if (body.action === "update") {
     const title = clean(body.title, 80);
     const eventDate = clean(body.eventDate, 10);

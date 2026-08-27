@@ -24,6 +24,8 @@ export const relationshipMembers = sqliteTable("relationship_members", {
   role: text("role").notNull(),
   joinedAt: text("joined_at").notNull(),
   leftAt: text("left_at"),
+  historySharingMode: text("history_sharing_mode"),
+  historySharingReviewedAt: text("history_sharing_reviewed_at"),
 }, table => [
   uniqueIndex("idx_relationship_members_pair").on(table.relationshipId, table.userId),
   uniqueIndex("idx_relationship_members_one_active").on(table.userId).where(sql`${table.leftAt} is null`),

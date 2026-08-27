@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V1.14 experience", async () => {
+test("server-renders the Love Diary V1.15 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V1\.14/);
+  assert.match(html, /<title>恋爱日记 V1\.15/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -30,7 +30,7 @@ test("server-renders the Love Diary V1.14 experience", async () => {
 });
 
 test("keeps accessibility and interaction safeguards in source", async () => {
-  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, schedulesApi, schema, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration] = await Promise.all([
+  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, historySharingApi, schedulesApi, schema, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration, historySharingMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -39,11 +39,13 @@ test("keeps accessibility and interaction safeguards in source", async () => {
     readFile(new URL("../app/api/relationship/invite/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/relationship/join/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/relationship/leave/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/relationship/history-sharing/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/schedules/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0002_release_ended_relationships.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0003_rainy_saracen.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0004_fuzzy_beyonder.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0005_acoustic_ben_grimm.sql", import.meta.url), "utf8"),
   ]);
 
   assert.match(layout, /className="skip-link"/);
@@ -71,7 +73,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(api, /sortrule/);
   assert.match(page, /navigator\.geolocation/);
   assert.match(page, /PlaceCandidates/);
-  assert.match(page, /isEventMonth&&d===eventDate\.getDate\(\)&&adopted/);
+  assert.match(page, /daySchedules=valid\?schedules\.filter/);
   assert.match(page, /距离待定位/);
   assert.match(api, /value === null \|\| value === undefined \|\| value === ""/);
   assert.match(api, /RATE_LIMIT/);
@@ -114,13 +116,14 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /love-diary-solo-user/);
   assert.match(page, /TA 已发出邀请/);
   assert.match(page, /scheduleDraft\.title \|\| currentPlan\.title/);
-  assert.match(page, /scheduleIsShared\?"共同安排":"仅自己可见"/);
+  assert.match(page, /schedule\.visibility==="shared"\?"共同安排":"我的计划"/);
   assert.match(page, /活动日期到来后，双方才能确认完成并生成基础回忆/);
   assert.match(page, /setCompleted\(false\); setMyConfirmed\(false\); setTaConfirmed\(false\)/);
   assert.match(schedulesApi, /pending_partner/);
   assert.match(schedulesApi, /body\.action === "cancel"/);
   assert.match(schedulesApi, /body\.action === "delete"/);
   assert.match(schedulesApi, /body\.action === "update"/);
+  assert.match(schedulesApi, /body\.action === "share"/);
   assert.match(schedulesApi, /visibility === "shared"/);
   assert.match(schedulesApi, /legacy_import/);
   assert.match(schedulesApi, /source_reference/);
@@ -128,6 +131,14 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(schedulesApi, /status='cancelled'/);
   assert.match(page, /cancelCurrentSchedule/);
   assert.match(page, /saveScheduleEdits/);
+  assert.match(page, /发给 TA 一起决定/);
+  assert.match(page, /单人阶段的计划/);
+  assert.match(page, /historySharingSelection/);
+  assert.match(page, /我的与共同日历/);
+  assert.match(page, /daySchedules\.some\(schedule=>schedule\.visibility==="personal"\)/);
+  assert.match(historySharingApi, /env\.DB\.batch/);
+  assert.match(historySharingApi, /history_sharing_mode/);
+  assert.match(historySharingApi, /visibility='shared'/);
   assert.match(page, /city: profile\.city/);
   assert.match(page, /monthOffsetFromToday/);
   assert.match(page, /onClick=\{jumpToToday\}>今日/);
@@ -148,6 +159,8 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(unifiedScheduleMigration, /CREATE TABLE `schedules`/);
   assert.match(unifiedScheduleMigration, /INSERT OR IGNORE INTO `schedules`/);
   assert.match(unifiedScheduleMigration, /FROM `shared_schedules`/);
+  assert.match(historySharingMigration, /ADD `history_sharing_mode`/);
+  assert.match(historySharingMigration, /ADD `history_sharing_reviewed_at`/);
   assert.match(page, /window\.sessionStorage\.setItem\(INSPIRATION_DRAFT_KEY/);
   assert.match(page, /window\.history\.replaceState\(\{ screen: initialScreen \}, "", `#\$\{initialScreen\}`\)/);
   assert.doesNotMatch(page, /new URLSearchParams/);

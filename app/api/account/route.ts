@@ -22,7 +22,8 @@ async function ensureUser(input?: ProfileInput) {
 
 async function accountSnapshot(userId: string) {
   const user = await env.DB.prepare("SELECT id,email,nickname,birthday,city FROM users WHERE id=?").bind(userId).first();
-  const relationship = await env.DB.prepare(`SELECT r.id, r.status, u.id AS partner_id, u.nickname AS partner_name, u.birthday AS partner_birthday
+  const relationship = await env.DB.prepare(`SELECT r.id, r.status, u.id AS partner_id, u.nickname AS partner_name, u.birthday AS partner_birthday,
+      me.history_sharing_mode, me.history_sharing_reviewed_at
     FROM relationship_members me JOIN relationships r ON r.id=me.relationship_id
     LEFT JOIN relationship_members partner ON partner.relationship_id=r.id AND partner.user_id<>me.user_id AND partner.left_at IS NULL
     LEFT JOIN users u ON u.id=partner.user_id
