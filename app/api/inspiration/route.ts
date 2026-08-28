@@ -139,13 +139,14 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
     `我的状态：${input.moods.join("、") || "未说明"}`,
     `氛围：${input.vibe}`,
     `时间：${input.time}`,
-    `预算：${input.budget}`,
+    `本次安排总预算：${input.budget}${input.partnerMood ? "（两人合计）" : "（单人合计）"}`,
     `空间：${input.space}`,
     `优先商圈：${input.district || "未指定"}`,
     `搜索范围：${Math.round(input.radius / 1000)}公里`,
   ];
   if (input.partnerMood) promptLines.splice(7, 0, `TA状态：${input.partnerMood}`);
   if (input.special) promptLines.push(`需要特别照顾：${input.special}`);
+  promptLines.push("预算是硬约束。不得建议超过预算上限的消费；地点价格未知时必须明确写“价格待确认”，不得声称符合预算；不得编造精确总价。");
   if (candidateLines.length) promptLines.push(`真实地点候选（只能从中选择）：\n${candidateLines.join("\n")}`);
   if (weather) {
     promptLines.push(`高德天气预报（${weather.reportTime}发布）：${weatherPrompt(weather)}`);
@@ -177,7 +178,7 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   const parsed = JSON.parse(stripCodeFence(text)) as { plans?: GeneratedPlan[] };
   if (!Array.isArray(parsed.plans) || parsed.plans.length !== 3) throw new Error("AIHubMix returned an invalid plan count");
   const usedPlaceIds = new Set<string>();
-  return parsed.plans.map((plan, index) => validatePlan(plan, candidates, usedPlaceIds, index));
+  return parsed.plans.map((plan, index) => validatePlan(plan, candidates, usedPlaceIds, index, input.budget));
 }
 
 async function searchAmapCandidates(apiKey: string, input: Required<InspirationRequest>): Promise<AmapPlace[]> {
@@ -230,6 +231,7 @@ function parseCandidate(poi: Record<string, unknown>, input: Required<Inspiratio
   const cost = clean(business.cost, 10);
   const address = rawAddress || `${clean(poi.adname, 40)}${businessArea}`;
   const scored = scoreCandidate({ name, address, businessArea, distance, rating, cost, openTimeToday: clean(business.opentime_today, 60), category }, input);
+  if (!scored.budgetEligible) return [];
   return [{ id, name, address, location, type: clean(poi.type, 120), distance, businessArea, rating, cost, openTimeToday: clean(business.opentime_today, 60), category, recommendationReasons: scored.reasons, score: scored.score, verifiedBy: "amap" }];
 }
 
@@ -259,16 +261,24 @@ function scoreCandidate(place: Pick<AmapPlace, "name" | "address" | "businessAre
   const rating = Number(place.rating);
   if (Number.isFinite(rating) && rating > 0) { score += rating >= 4.5 ? 20 : rating >= 4 ? 15 : rating >= 3.5 ? 8 : 0; reasons.push(`高德评分${rating.toFixed(1)}`); }
   const cost = Number(place.cost);
+  const people = input.partnerMood ? 2 : 1;
+  const maxBudget = budgetMaximum(input.budget);
   if (Number.isFinite(cost) && cost > 0) {
-    const people = input.partnerMood ? 2 : 1;
     const totalCost = cost * people;
-    const maxBudget = input.budget === "¥100以内" ? 100 : input.budget === "¥100–300" ? 300 : Infinity;
-    score += totalCost <= maxBudget ? 12 : totalCost <= maxBudget * 1.25 ? 3 : -10;
-    reasons.push(`${people === 2 ? "两人" : "参考"}消费约¥${Math.round(totalCost)}`);
+    if (totalCost > maxBudget) return { score: -Infinity, reasons: [], budgetEligible: false };
+    score += 12;
+    reasons.push(`${people === 2 ? "两人地点" : "地点"}参考约¥${Math.round(totalCost)}`);
+  } else {
+    if (Number.isFinite(maxBudget)) score -= 8;
+    reasons.push("地点价格待确认");
   }
   if (place.openTimeToday) { score += 3; reasons.push("今日营业时间可查询"); }
   if (/(少走路|腿脚|行动不便)/u.test(input.special) && /(咖啡|商场|博物馆|美术馆|电影院)/u.test(place.category)) { score += 7; reasons.push("优先单点室内活动"); }
-  return { score, reasons: reasons.slice(0, 4) };
+  return { score, reasons: reasons.slice(0, 4), budgetEligible: true };
+}
+
+function budgetMaximum(budget: string) {
+  return budget === "¥100以内" ? 100 : budget === "¥100–300" ? 300 : Infinity;
 }
 
 function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> {
@@ -278,7 +288,7 @@ function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> 
     partnerMood: clean(input.partnerMood, 20),
     vibe: clean(input.vibe, 20),
     time: clean(input.time, 20),
-    budget: clean(input.budget, 20),
+    budget: ["¥100以内", "¥100–300", "¥300+"].includes(input.budget ?? "") ? input.budget! : "¥100–300",
     space: clean(input.space, 20),
     special: clean(input.special, 120),
     district: clean(input.district, 40),
@@ -289,7 +299,7 @@ function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> 
   };
 }
 
-function validatePlan(plan: GeneratedPlan, candidates: AmapPlace[], usedPlaceIds: Set<string>, planIndex: number): GeneratedPlan {
+function validatePlan(plan: GeneratedPlan, candidates: AmapPlace[], usedPlaceIds: Set<string>, planIndex: number, requestedBudget: string): GeneratedPlan {
   if (!plan || typeof plan.title !== "string" || typeof plan.summary !== "string" || !Array.isArray(plan.timeline)) throw new Error("Invalid generated plan");
   const timeline = plan.timeline.slice(0, 3).map(item => ({ time: clean(item.time, 10), title: clean(item.title, 50), description: clean(item.description, 120) }));
   while (timeline.length < 3) {
@@ -307,7 +317,7 @@ function validatePlan(plan: GeneratedPlan, candidates: AmapPlace[], usedPlaceIds
     title: clean(plan.title, 50),
     summary: clean(plan.summary, 180),
     duration: clean(plan.duration, 30),
-    budgetLabel: clean(plan.budgetLabel, 30),
+    budgetLabel: clean(requestedBudget, 30),
     placeQuery: clean(plan.placeQuery, 80),
     placeId: primary?.id,
     timeline,

@@ -21,10 +21,17 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(api, /buildCandidateFallbackPlans/);
   assert.match(api, /recommendationReasons: scored\.reasons/);
   assert.match(api, /rating >= 4\.5 \? 20/);
-  assert.match(api, /totalCost <= maxBudget/);
+  assert.match(api, /totalCost > maxBudget/);
+  assert.match(api, /budgetEligible: false/);
+  assert.match(api, /budgetLabel: clean\(requestedBudget/);
+  assert.match(api, /预算是硬约束/);
+  assert.match(api, /\["¥100以内", "¥100–300", "¥300\+"\]\.includes/);
   assert.match(api, /暂停营业\|停止营业\|已关闭\|永久关闭/);
   assert.match(page, /districtSource:district\.trim\(\)\?"manual":"none"/);
   assert.match(page, /为什么推荐这里/);
   assert.match(page, /AI 暂时繁忙，已根据真实地点生成可执行方案/);
   assert.match(page, /recommendationReasons\.slice\(0,2\)/);
+  assert.match(page, /本次安排总预算/);
+  assert.match(page, /地点价格待确认/);
+  assert.doesNotMatch(page, /format\(260\)/);
 });
