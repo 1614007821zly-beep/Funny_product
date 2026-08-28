@@ -21,6 +21,8 @@ type PublicShareLink = { id: string; path: string; expiresAt: string };
 type ManagedShareLink = { id: string; scheduleId: string; title: string; expiresAt: string; revokedAt: string | null; createdAt: string };
 type WeatherDay = { date: string; dayWeather: string; nightWeather: string; dayTemp: string; nightTemp: string; dayWind: string; nightWind: string; dayPower: string; nightPower: string };
 type WeatherForecast = { queryCity: string; city: string; province: string; adcode: string; reportTime: string; fetchedAt: string; forecasts: WeatherDay[] };
+type LocationPreferences = { city: string; district: string; radius: number; longitude: number | null; latitude: number | null; label: string };
+type ResolvedLocation = { city: string; district: string; businessArea: string; displayName: string; longitude: number; latitude: number };
 
 const LEGACY_STORAGE_KEYS = ["love-diary-v112", "love-diary-v17", "love-diary-v16", "love-diary-v15", "love-diary-v14"];
 const INSPIRATION_DRAFT_KEY = "love-diary-inspiration-draft-v1";
@@ -123,7 +125,7 @@ export default function Home() {
   const [monthOffset, setMonthOffset] = useState(0);
   const [placeVersion, setPlaceVersion] = useState(0);
   const [selectedPlaceIndexes, setSelectedPlaceIndexes] = useState([0, 0, 0]);
-  const [locationPrefs, setLocationPrefs] = useState<{ district: string; radius: number; longitude: number | null; latitude: number | null; label: string }>({ district: "", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
+  const [locationPrefs, setLocationPrefs] = useState<LocationPreferences>({ city: "", district: "", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
   const [choices, setChoices] = useState({ mood: "想放松", taMood: "和我一样", vibe: "安静", time: "今晚", budget: "¥100–300", space: "都可以", special: "" });
   const [myStates, setMyStates] = useState<string[]>(["想放松"]);
   const [customStates, setCustomStates] = useState<string[]>([]);
@@ -142,6 +144,7 @@ export default function Home() {
   })), [aiPlans, choices]);
   const currentPlan = dynamicPlans[selectedPlan];
   const hasRelationship = Boolean(account?.relationship?.partner_id);
+  const inspirationCity = locationPrefs.city || profile.city;
   const activeTask = taskRecord && !["completed", "cancelled"].includes(taskRecord.status) ? taskRecord : null;
   const taskAccepted = Boolean(activeTask && ["active", "completion_pending"].includes(activeTask.status));
   const taskDone = tasks.some(task => task.status === "completed");
@@ -461,12 +464,12 @@ export default function Home() {
   async function saveSelectedCity(city: string) {
     const previousCity = account?.user?.city ?? profile.city;
     setProfile(current => ({ ...current, city }));
-    if (!account?.authenticated) { notify("城市已更新"); return; }
+    if (!account?.authenticated) { setLocationPrefs(current => ({ ...current, city: "", district: "", longitude: null, latitude: null, label: "尚未定位" })); notify("城市已更新"); return; }
     try {
       const response = await fetch("/api/account", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nickname: profile.name, birthday: profile.birthday, city }) });
       const data = await response.json() as AccountSnapshot & { error?: string };
       if (!response.ok) throw new Error(data.error || "城市同步失败。");
-      setAccount(data); notify("城市已更新并同步到账户");
+      setAccount(data); setLocationPrefs(current => ({ ...current, city: "", district: "", longitude: null, latitude: null, label: "尚未定位" })); notify("城市已更新并同步到账户");
     } catch { setProfile(current => ({ ...current, city: previousCity })); notify("城市保存失败，已恢复账户中的城市"); }
   }
   async function saveProfileEdits() {
@@ -520,7 +523,21 @@ export default function Home() {
     setIsLocating(true);
     notify("正在获取当前位置…");
     navigator.geolocation.getCurrentPosition(
-      position => { setLocationPrefs(current => ({ ...current, longitude: position.coords.longitude, latitude: position.coords.latitude, label: `已定位 · 精度约 ${new Intl.NumberFormat("zh-CN").format(Math.round(position.coords.accuracy))} 米` })); setIsLocating(false); notify("已获取当前位置，仅用于本次附近搜索"); },
+      async position => {
+        const accuracy = new Intl.NumberFormat("zh-CN").format(Math.round(position.coords.accuracy));
+        setLocationPrefs(current => ({ ...current, longitude: position.coords.longitude, latitude: position.coords.latitude, label: "已定位，正在识别所在区域…" }));
+        try {
+          const response = await fetch("/api/location", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ longitude: position.coords.longitude, latitude: position.coords.latitude }) });
+          const data = await response.json() as { location?: ResolvedLocation; error?: string };
+          if (!response.ok || !data.location) throw new Error(data.error || "区域识别失败");
+          const resolved = data.location;
+          setLocationPrefs(current => ({ ...current, city: resolved.city, district: resolved.businessArea || resolved.district, longitude: resolved.longitude, latitude: resolved.latitude, label: `已定位 · ${resolved.city}${resolved.displayName} · 精度约 ${accuracy} 米` }));
+          notify(`已自动填写${resolved.displayName}，仍可手动修改`);
+        } catch {
+          setLocationPrefs(current => ({ ...current, label: `已定位 · 精度约 ${accuracy} 米；区域识别失败，可手动填写` }));
+          notify("已获取坐标，但暂时无法识别商圈，可手动填写");
+        } finally { setIsLocating(false); }
+      },
       () => { setLocationPrefs(current => ({ ...current, label: "定位失败，请允许权限或手动填写商圈" })); setIsLocating(false); notify("无法获取定位，请允许权限或手动填写商圈"); },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
     );
@@ -535,7 +552,7 @@ export default function Home() {
       const response = await fetch("/api/inspiration", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ city: profile.city, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: locationPrefs.district, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude }),
+        body: JSON.stringify({ city: inspirationCity, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: locationPrefs.district, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude }),
         signal: controller.signal,
       });
       const data = await response.json() as { plans?: Array<{ title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[] }>; weather?: WeatherForecast | null; error?: string; code?: string };
@@ -564,7 +581,7 @@ export default function Home() {
     LEGACY_STORAGE_KEYS.forEach(key => window.localStorage.removeItem(key));
     ["love-diary-legacy-backup", "love-diary-legacy-plan-migrated", "love-diary-legacy-plan-dismissed", "love-diary-solo-user"].forEach(key => window.localStorage.removeItem(key));
     setChoices({ mood: "想放松", taMood: "和我一样", vibe: "安静", time: "今晚", budget: "¥100–300", space: "都可以", special: "" });
-    setMyStates(["想放松"]); setCustomStates([]); setLocationPrefs({ district: "", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
+    setMyStates(["想放松"]); setCustomStates([]); setLocationPrefs({ city: "", district: "", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
     setLegacyPlan(null); setSoloMode(false); setAiPlans(null); setHasGenerated(false); setCompleted(false); setTaskContextActive(false); setTaskLinked(false); setMemoryCreated(false); setMemoryContentRetracted(false); setRelationshipExited(false); setSafetyExitUsed(false); setPanel("");
     history.current = []; void loadSharedSchedule(true); void loadSharedExperiences(true); go("welcome", true);
   }
@@ -736,10 +753,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!account?.authenticated || !["results", "plan", "confirm", "schedule", "calendar"].includes(screen)) return;
-    const city = ["confirm", "schedule"].includes(screen) ? scheduleDraft.city || profile.city : profile.city;
+    const city = ["confirm", "schedule"].includes(screen) ? scheduleDraft.city || profile.city : inspirationCity;
     window.queueMicrotask(() => void loadWeather(city, true));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, account?.authenticated, profile.city, scheduleDraft.city]);
+  }, [screen, account?.authenticated, inspirationCity, profile.city, scheduleDraft.city]);
 
   useEffect(() => {
     if (screen === "notifications" && account?.authenticated) window.queueMicrotask(() => void loadPreferences(true));
@@ -976,10 +993,10 @@ export default function Home() {
 
             {screen === "inspire" && (
               <div className="page tab-page form-page">
-                <header><button className="location-button" onClick={() => setPanel("cityEdit")} aria-label={`切换城市，当前为${profile.city}`}>{profile.city}⌄</button><span className="header-title">找灵感</span><button className="text-button" onClick={() => {setMyStates(["想放松"]);setChoices({ mood:"想放松",taMood:"和我一样",vibe:"安静",time:"今晚",budget:"¥100–300",space:"都可以",special:"" });}}>重置条件</button></header>
+                <header><button className="location-button" onClick={() => setPanel("cityEdit")} aria-label={`切换城市，当前为${inspirationCity}`}>{inspirationCity}⌄</button><span className="header-title">找灵感</span><button className="text-button" onClick={() => {setMyStates(["想放松"]);setChoices({ mood:"想放松",taMood:"和我一样",vibe:"安静",time:"今晚",budget:"¥100–300",space:"都可以",special:"" });}}>重置条件</button></header>
                 {taskContextActive && <div className="context-banner"><span>本次灵感目标</span><b>为「交换一首最近常听的歌」找灵感</b><button onClick={() => setTaskContextActive(false)} aria-label="移除共同任务灵感目标">×</button></div>}
                 <div className="form-intro"><p className="kicker">{hasRelationship?"此刻的你们":"此刻的我"}</p><h2>{hasRelationship?<>今天想和 TA<br/>怎么度过？</>:<>今天想<br/>怎么度过？</>}</h2><p>不用想得太具体，选几个直觉答案就好。</p></div>
-                <section className="nearby-settings" aria-labelledby="nearby-title"><div className="nearby-heading"><div><p className="kicker">从哪里出发</p><h3 id="nearby-title">优先推荐附近地点</h3></div><button type="button" onClick={useCurrentLocation} disabled={isLocating} aria-describedby="location-status">⌖ {isLocating ? "正在定位…" : "使用当前位置"}</button></div><p id="location-status" className="location-status" aria-live="polite">{locationPrefs.label}</p><label>商圈或区域（可选）<input name="business-district" autoComplete="address-level3" value={locationPrefs.district} onChange={event=>setLocationPrefs({...locationPrefs,district:event.target.value})} maxLength={40} placeholder="例如：西湖区、武林广场、国贸…"/></label><fieldset className="radius-choice"><legend>地点搜索范围</legend>{[[3000,"3 公里"],[5000,"5 公里"],[10000,"10 公里"]] .map(([radius,label])=><button type="button" key={radius} className={locationPrefs.radius===radius?"active":""} aria-pressed={locationPrefs.radius===radius} onClick={()=>setLocationPrefs({...locationPrefs,radius:Number(radius)})}>{label}</button>)}</fieldset><small>定位只用于本次附近搜索，不保存在共同资料中；也可以拒绝定位并手动填写商圈。</small></section>
+                <section className="nearby-settings" aria-labelledby="nearby-title"><div className="nearby-heading"><div><p className="kicker">从哪里出发</p><h3 id="nearby-title">优先推荐附近地点</h3></div><button type="button" onClick={useCurrentLocation} disabled={isLocating} aria-describedby="location-status">⌖ {isLocating ? "正在定位…" : "使用当前位置"}</button></div><p id="location-status" className="location-status" aria-live="polite">{locationPrefs.label}</p><label>商圈或区域（可选）<input name="business-district" autoComplete="address-level3" value={locationPrefs.district} onChange={event=>setLocationPrefs({...locationPrefs,district:event.target.value})} maxLength={40} placeholder={locationPrefs.longitude === null ? "定位后自动填写，也可以手动输入" : "未识别到商圈，请手动输入"}/><small className="field-help">定位变化后会自动更新；自动结果也可以继续修改。</small></label><fieldset className="radius-choice"><legend>地点搜索范围</legend>{[[3000,"3 公里"],[5000,"5 公里"],[10000,"10 公里"]] .map(([radius,label])=><button type="button" key={radius} className={locationPrefs.radius===radius?"active":""} aria-pressed={locationPrefs.radius===radius} onClick={()=>setLocationPrefs({...locationPrefs,radius:Number(radius)})}>{label}</button>)}</fieldset><small>定位只用于本次附近搜索，不保存在共同资料中；也可以拒绝定位并手动填写商圈。</small></section>
                 <MultiChoice title="我的状态（最多选2项）" options={["想放松", "有点累", "想热闹", "想尝鲜", "想认真聊聊", ...customStates]} values={myStates} setValues={(values)=>{setMyStates(values);setChoices({...choices,mood:values[0]??"想放松"});}}/>
                 <div className="custom-state-editor"><label htmlFor="custom-state">没有合适的状态？</label><div><input id="custom-state" aria-label="自定义状态" name="custom-state" autoComplete="off" value={newState} onChange={e=>setNewState(e.target.value)} maxLength={10} placeholder="例如：刚加完班…"/><button onClick={()=>{const value=newState.trim();if(!value)return;if(!customStates.includes(value))setCustomStates([...customStates,value]);setNewState("");notify("已加入自定义状态，可立即选择");}}>＋ 添加</button></div>{customStates.length>0&&<p>自定义状态可重复使用；点击右侧删除： {customStates.map(state=><button key={state} onClick={()=>{setCustomStates(customStates.filter(x=>x!==state));setMyStates(myStates.filter(x=>x!==state));}}>{state} ×</button>)}</p>}</div>
                 {hasRelationship&&<Choice title="TA 呢？" options={["和我一样", "想放松", "想热闹", "不知道"]} value={choices.taMood} setValue={(taMood) => setChoices({...choices,taMood})}/>}
@@ -1000,7 +1017,7 @@ export default function Home() {
             {screen === "results" && (
               <div className="page result-page">
                 <header><Back onClick={() => back("inspire")}/><span>{hasRelationship?"为你们想到的":"为你想到的"}</span><button className="text-button" onClick={() => go("inspire")}>调整条件</button></header>
-                <div className="result-intro"><p className="kicker">{profile.city} · {choices.time} · {choices.mood} · {choices.budget}</p><h2>{choices.space === "室内" ? <>留在室内，<br/>也能认真约会。</> : <>不赶时间，<br/>也不辜负今晚。</>}</h2>{inspirationWeather&&<p className="weather-summary">高德天气 · {inspirationWeather.date} · {weatherLabel(inspirationWeather)}</p>}</div>
+                <div className="result-intro"><p className="kicker">{inspirationCity} · {choices.time} · {choices.mood} · {choices.budget}</p><h2>{choices.space === "室内" ? <>留在室内，<br/>也能认真约会。</> : <>不赶时间，<br/>也不辜负今晚。</>}</h2>{inspirationWeather&&<p className="weather-summary">高德天气 · {inspirationWeather.date} · {weatherLabel(inspirationWeather)}</p>}</div>
                 <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => setSelectedPlan(0)}><div className="plan-top"><span>主灵感 · {aiPlans ? "AI 实时生成" : "演示方案"}</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · {choices.budget} · {choices.space}</p><p>{dynamicPlans[0].desc}</p>{choices.special.trim()&&<span className="prep-note">特别照顾：{choices.special.trim()}</span>}</button><div className="alternative-title"><b>也可以试试</b><button onClick={() => {setSelectedPlan((selectedPlan+1)%3);notify("已将下一方案设为主方案");}}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => setSelectedPlan(i)}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p></div><i aria-hidden="true">›</i></button>})}</div>
                 <div className="sticky-cta"><button className="primary-button" onClick={() => go("plan")}>查看详细计划 <Arrow /></button></div>
               </div>
@@ -1008,17 +1025,17 @@ export default function Home() {
 
             {screen === "plan" && (
               <div className="page detail-page">
-                <div className="detail-hero"><header><Back onClick={() => back("results")}/><span>AI 详细计划</span><button className="icon-button" onClick={() => notify("为保护灵感条件，当前版本不会生成公开计划链接")} aria-label="分享计划说明">↗</button></header><p className="kicker">候选方案 · 尚未进入日历</p><h2>{currentPlan.title}</h2><p className="plan-summary">{currentPlan.desc}</p><div className="detail-meta"><span>{profile.city} · {choices.time}</span><span>{currentPlan.duration || "约 3.5 小时"}</span><span>{choices.budget}</span></div></div>
+                <div className="detail-hero"><header><Back onClick={() => back("results")}/><span>AI 详细计划</span><button className="icon-button" onClick={() => notify("为保护灵感条件，当前版本不会生成公开计划链接")} aria-label="分享计划说明">↗</button></header><p className="kicker">候选方案 · 尚未进入日历</p><h2>{currentPlan.title}</h2><p className="plan-summary">{currentPlan.desc}</p><div className="detail-meta"><span>{inspirationCity} · {choices.time}</span><span>{currentPlan.duration || "约 3.5 小时"}</span><span>{choices.budget}</span></div></div>
                 <section className="timeline"><p className="kicker">今晚的节奏</p>{(currentPlan.timeline ?? [
                   { time: "18:30", title: "在地铁口见面", description: "不用赶，先买两杯喜欢的饮料" }, { time: "19:00", title: "沿江慢慢散步", description: "推荐路线 2.3 km · 约 45 分钟" }, { time: "20:00", title: "河畔小酒馆", description: "靠窗位 · 分享甜点与低度酒" }, { time: "21:40", title: "一起回家", description: "今晚留一个问题给彼此" }
                 ]).map((node, i) => <div className="timeline-item" key={`${node.time}-${node.title}`}><span>{node.time}</span><i aria-hidden="true">{i + 1}</i><div>{i === 2 ? <a className="place-link" href="#location" onClick={(event) => {event.preventDefault();go("location");}}><b>{currentPlace?.name || node.title}</b><em>查看地点 ›</em></a> : <b>{node.title}</b>}<p>{node.description}</p>{i === 2 && <button className="replace-place" disabled={currentPlaceCandidates.length < 2} onClick={() => {const next=((selectedPlaceIndexes[selectedPlan]??0)+1)%currentPlaceCandidates.length;setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?next:value));setPlaceVersion(next);notify(`已切换为${currentPlaceCandidates[next]?.name}`);}}>换一个地点</button>}</div></div>)}</section>
                 <section className="execution-info"><p className="kicker">执行信息</p><div><span>地点</span><b>{currentPlace ? "高德地图已匹配" : "AI 建议 · 尚未核验"}</b></div><div><span>交通</span><b>打开高德地图后查看实时路线</b></div><div><span>天气</span><b>{inspirationWeather?`${weatherLabel(inspirationWeather)} · 高德天气`:choices.time==="暂不确定"?"时间确定后显示预报":"当前时间不在高德 4 天预报内"}</b></div><div><span>预算</span><b>{choices.budget}{hasRelationship?" / 两人":" · 参考"}</b></div></section>
                 <section className="warm-note"><span>♡</span><p><b>一个小提示</b><br/>{hasRelationship?"把手机收起来十分钟，问问对方：最近有什么小事让你开心？":"给自己留十分钟，不赶时间地感受今天。"}</p></section>
-                <div className="sticky-cta"><button className="primary-button" onClick={() => {setScheduleDraft(draft => ({...draft, title: currentPlan.title, city: profile.city, date: inspirationWeather?.date ?? draft.date}));go("confirm");}}>采用这个安排 <Arrow /></button><p>下一步确认日期与时间；确认前不会进入日历</p></div>
+                <div className="sticky-cta"><button className="primary-button" onClick={() => {setScheduleDraft(draft => ({...draft, title: currentPlan.title, city: inspirationCity, date: inspirationWeather?.date ?? draft.date}));go("confirm");}}>采用这个安排 <Arrow /></button><p>下一步确认日期与时间；确认前不会进入日历</p></div>
               </div>
             )}
 
-            {screen === "location" && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span>{currentPlace ? <a className="icon-button" href={amapMapUrl} target="_blank" rel="noreferrer" aria-label="在高德地图中打开地点">↗</a> : <button className="icon-button" onClick={() => notify("本方案尚未匹配到真实地点")} aria-label="地点尚未匹配">↗</button>}</header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>{currentPlace ? "高德地图地点数据" : "AI 地点建议 · 未核验"}</span></div><section className="place-title"><p className="kicker">{currentPlace ? "真实地点已匹配 · 营业信息请出发前确认" : "尚未匹配到真实地点"}</p><h2>{currentPlace?.name || currentPlan.title}</h2><p>{currentPlace?.address || `请在${profile.city}重新生成或更换搜索条件`}</p></section><section className="info-group"><InfoRow label="计划时段" value="以最终安排为准"/><InfoRow label="地点类型" value={currentPlace?.type || "AI 建议"}/><InfoRow label="坐标" value={currentPlace?.location || "尚未获取"}/><InfoRow label="营业时间" value="高德地点搜索未提供，需另行确认"/><InfoRow label="地点来源" value={currentPlace ? "高德地图 Web 服务" : "AIHubMix 建议"}/></section><PlaceCandidates places={currentPlaceCandidates} selectedId={currentPlace?.id} onSelect={(index)=>{setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?index:value));setPlaceVersion(index);}}/><section className="place-notice"><b>执行提示</b><p>{currentPlace ? "地点名称、地址和坐标来自高德地图；营业状态、排队情况与价格可能变化，请出发前确认。" : "AI 不会编造具体商家。重新生成后，系统会尝试用高德地图匹配真实地点。"}</p></section>{currentPlace ? <a className="primary-button map-link" href={amapMapUrl} target="_blank" rel="noreferrer">在高德地图中查看 <Arrow/></a> : <button className="primary-button" onClick={() => {go("inspire");notify("请调整关键词后重新生成");}}>返回调整条件 <Arrow/></button>}<button className="ghost-button" onClick={() => {setSelectedPlan((selectedPlan+1)%3);go("plan");}}>查看另一个方案</button></div>}
+            {screen === "location" && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span>{currentPlace ? <a className="icon-button" href={amapMapUrl} target="_blank" rel="noreferrer" aria-label="在高德地图中打开地点">↗</a> : <button className="icon-button" onClick={() => notify("本方案尚未匹配到真实地点")} aria-label="地点尚未匹配">↗</button>}</header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>{currentPlace ? "高德地图地点数据" : "AI 地点建议 · 未核验"}</span></div><section className="place-title"><p className="kicker">{currentPlace ? "真实地点已匹配 · 营业信息请出发前确认" : "尚未匹配到真实地点"}</p><h2>{currentPlace?.name || currentPlan.title}</h2><p>{currentPlace?.address || `请在${inspirationCity}重新生成或更换搜索条件`}</p></section><section className="info-group"><InfoRow label="计划时段" value="以最终安排为准"/><InfoRow label="地点类型" value={currentPlace?.type || "AI 建议"}/><InfoRow label="坐标" value={currentPlace?.location || "尚未获取"}/><InfoRow label="营业时间" value="高德地点搜索未提供，需另行确认"/><InfoRow label="地点来源" value={currentPlace ? "高德地图 Web 服务" : "AIHubMix 建议"}/></section><PlaceCandidates places={currentPlaceCandidates} selectedId={currentPlace?.id} onSelect={(index)=>{setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?index:value));setPlaceVersion(index);}}/><section className="place-notice"><b>执行提示</b><p>{currentPlace ? "地点名称、地址和坐标来自高德地图；营业状态、排队情况与价格可能变化，请出发前确认。" : "AI 不会编造具体商家。重新生成后，系统会尝试用高德地图匹配真实地点。"}</p></section>{currentPlace ? <a className="primary-button map-link" href={amapMapUrl} target="_blank" rel="noreferrer">在高德地图中查看 <Arrow/></a> : <button className="primary-button" onClick={() => {go("inspire");notify("请调整关键词后重新生成");}}>返回调整条件 <Arrow/></button>}<button className="ghost-button" onClick={() => {setSelectedPlan((selectedPlan+1)%3);go("plan");}}>查看另一个方案</button></div>}
 
             {screen === "confirm" && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>{hasRelationship?"确认安排":"保存我的计划"}</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>{hasRelationship?<>发给 TA，<br/>一起决定。</>:<>先为自己，<br/>保存这个计划。</>}</h2><p className="confirm-copy">{hasRelationship?"你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”。":"计划默认仅自己可见；以后邀请 TA 时，也不会自动共享。"}</p></section><section className="confirm-card"><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>{setScheduleDraft({...scheduleDraft,title:e.target.value});setFormError("");}}/></label><label>日期<input required name="schedule-date" type="date" autoComplete="off" value={scheduleDraft.date} onChange={e=>{setScheduleDraft({...scheduleDraft,date:e.target.value});setFormError("");}}/></label><label>开始时间<input required name="schedule-time" type="time" autoComplete="off" value={scheduleDraft.time} onChange={e=>{setScheduleDraft({...scheduleDraft,time:e.target.value});setFormError("");}}/></label><label>所在城市<input required name="schedule-city" autoComplete="address-level2" value={scheduleDraft.city || profile.city} onChange={e=>{setScheduleDraft({...scheduleDraft,city:e.target.value});setFormError("");}}/></label></section>{scheduleWeather&&weather&&<WeatherNotice day={scheduleWeather} reportTime={weather.reportTime}/>} {formError&&<p className="field-error" role="alert">{formError}</p>}{taskContextActive && <section className="link-context"><span>♫</span><div><b>关联共同任务</b><p>交换一首最近常听的歌</p></div><em>安排确认后关联</em></section>}<button className="primary-button" disabled={scheduleBusy} onClick={()=>hasRelationship?void createSharedSchedule():void savePersonalPlan()}>{scheduleBusy?"正在保存…":hasRelationship?"发给 TA 确认":"保存到我的计划"} <Arrow/></button>{!hasRelationship&&<button className="ghost-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定</button>}<button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
 

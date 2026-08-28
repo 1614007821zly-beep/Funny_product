@@ -111,6 +111,7 @@ html{overflow-x:hidden}body{overflow-x:hidden}button,a,input,textarea,summary{to
 .radius-choice legend{width:100%;margin-bottom:8px;font-size:11px;font-weight:650}
 .radius-choice button{font-size:11px;padding:9px 4px}
 .nearby-settings>small,.location-status,.place-candidates .section-heading>span,.place-candidates>button>span,.candidate-empty{font-size:11px}
+.nearby-settings .field-help{display:block;margin-top:7px;color:var(--muted);font-size:10px;font-weight:400;line-height:1.45}
 .nearby-heading button:disabled{opacity:.55;cursor:wait}
 .create-form select{display:block;width:100%;border:0;background:none;padding:7px 0 0;font:inherit;font-size:11px;color:var(--ink)}
 .create-form select:focus-visible{outline:3px solid #7f4a4a;outline-offset:3px;border-radius:8px}
