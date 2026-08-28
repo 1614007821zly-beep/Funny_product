@@ -230,3 +230,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(schema, /relationshipInvites/);
   assert.doesNotMatch(page, /AIHUBMIX_API_KEY|AMAP_WEB_SERVICE_KEY/);
 });
+
+test("prevents recalled photos from remaining in browser caches", async () => {
+  const mediaSource = await readFile(new URL("../app/api/media/route.ts", import.meta.url), "utf8");
+  assert.match(mediaSource, /cache-control[\s\S]*private, no-store/);
+  assert.doesNotMatch(mediaSource, /cache-control[\s\S]*max-age=300/);
+});

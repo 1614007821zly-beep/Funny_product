@@ -24,7 +24,7 @@ export async function GET(request: Request) {
   if (!canRead) return Response.json({ error: "你无权查看这张照片。" }, { status: 403 });
   const object = await env.MEDIA.get(media.object_key);
   if (!object) return Response.json({ error: "照片文件不存在。" }, { status: 404 });
-  return new Response(object.body, { headers: { "content-type": object.httpMetadata?.contentType ?? media.content_type, "cache-control": "private, max-age=300", "x-content-type-options": "nosniff" } });
+  return new Response(object.body, { headers: { "content-type": object.httpMetadata?.contentType ?? media.content_type, "cache-control": "private, no-store", "x-content-type-options": "nosniff" } });
 }
 
 export async function POST(request: Request) {
