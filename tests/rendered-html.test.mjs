@@ -206,6 +206,10 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /fetch\("\/api\/share-links"/);
   assert.match(page, /fetch\("\/api\/account\/export"/);
   assert.match(page, /calendarDayStatus\(dateKey\)/);
+  assert.match(page, /refreshSharedCalendar/);
+  assert.match(page, /loadSharedSchedule\(true, true\)/);
+  assert.match(page, /共同安排与重要日子约 5 秒自动同步/);
+  assert.match(page, /festival-banner/);
   assert.match(page, /国务院办公厅安排/);
   assert.match(preferencesApi, /ON CONFLICT\(user_id\) DO UPDATE/);
   assert.match(feedbackApi, /INSERT INTO feedback_entries/);
@@ -219,6 +223,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(sharePage, /不包含心情、特别照顾、定位或搜索条件/);
   assert.match(exportApi, /created_by_user_id=\?/);
   assert.match(holidays, /2026-02-15/);
+  assert.match(holidays, /2026-02-17/);
+  assert.match(holidays, /2026-08-19/);
+  assert.match(holidays, /festivalName/);
   assert.match(holidays, /2026-10-10/);
   assert.match(holidays, /weekend/);
   assert.match(stageFourMigration, /CREATE TABLE `user_preferences`/);

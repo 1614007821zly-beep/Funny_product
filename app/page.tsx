@@ -217,7 +217,7 @@ export default function Home() {
     } catch (error) { setRelationshipError(error instanceof Error ? error.message : "邀请码生成失败。"); }
     finally { setAccountBusy(false); }
   }
-  async function loadSharedSchedule(silent = false) {
+  async function loadSharedSchedule(silent = false, preserveCalendar = false) {
     if (!account?.authenticated && !silent) return;
     try {
       const response = await fetch("/api/schedules", { cache: "no-store" });
@@ -229,7 +229,7 @@ export default function Home() {
       setSharedSchedule(schedule);
       if (schedule) {
         setScheduleDraft({ title: schedule.title, date: schedule.event_date, time: schedule.event_time, city: schedule.city });
-        showDateInCalendar(localDate(schedule.event_date));
+        if (!preserveCalendar) showDateInCalendar(localDate(schedule.event_date));
         setAdopted(true); setPartnerAccepted(schedule.status === "confirmed"); setCancelled(schedule.status === "cancelled");
         setCompleted(false); setMyConfirmed(false); setTaConfirmed(false);
       } else if (account?.authenticated) { setAdopted(false); setPartnerAccepted(false); }
@@ -685,7 +685,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const refreshAccount = () => { if (document.visibilityState === "visible") { void loadAccount(true); void loadSharedSchedule(true); void loadSharedExperiences(true); } };
+    const refreshAccount = () => { if (document.visibilityState === "visible") { void loadAccount(true); void loadSharedSchedule(true, true); void loadSharedExperiences(true); } };
     window.addEventListener("focus", refreshAccount);
     document.addEventListener("visibilitychange", refreshAccount);
     return () => {
@@ -702,6 +702,14 @@ export default function Home() {
     void loadSharedExperiences(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account?.authenticated, account?.relationship?.id]);
+
+  useEffect(() => {
+    if (screen !== "calendar" || !account?.authenticated || !account.relationship?.id) return;
+    const refreshSharedCalendar = () => { void loadSharedSchedule(true, true); void loadSharedExperiences(true); };
+    const timer = window.setInterval(refreshSharedCalendar, 5000);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, account?.authenticated, account?.relationship?.id]);
 
   useEffect(() => {
     if (screen === "notifications" && account?.authenticated) window.queueMicrotask(() => void loadPreferences(true));
@@ -1023,13 +1031,14 @@ export default function Home() {
                   const dayStatus=valid?calendarDayStatus(dateKey):{kind:"normal" as const,label:"" as const};
                   const daySchedules=valid?schedules.filter(schedule=>schedule.event_date===dateKey):[]; const dayImportantDays=valid?importantDaysOnDate(dateKey):[];
                   const hasShared=daySchedules.some(schedule=>schedule.visibility==="shared"); const hasPersonal=daySchedules.some(schedule=>schedule.visibility==="personal"); const isToday=isCurrentMonth&&d===today.getDate();
-                  const states=[isToday?"今天":"",dayStatus.kind==="rest"?`${dayStatus.holidayName??"法定节假日"}休息`:dayStatus.kind==="adjusted-work"?"调休上班":dayStatus.kind==="weekend"?"周末":"",hasShared?"有共同安排":"",hasPersonal?"有我的计划":"",isIdeaMonth&&d===16&&hasGenerated?"有 AI 灵感":"",dayImportantDays.length?"重要日子":""].filter(Boolean).join("，");
+                  const states=[isToday?"今天":"",dayStatus.festivalName?`节日：${dayStatus.festivalName}`:"",dayStatus.kind==="rest"?`${dayStatus.holidayName??"法定节假日"}休息`:dayStatus.kind==="adjusted-work"?"调休上班":dayStatus.kind==="weekend"?"周末":"",hasShared?"有共同安排":"",hasPersonal?"有我的计划":"",isIdeaMonth&&d===16&&hasGenerated?"有 AI 灵感":"",dayImportantDays.length?"重要日子":""].filter(Boolean).join("，");
                   const scheduleClass=hasShared&&hasPersonal?"mixed-plan":hasShared?"official":hasPersonal?"personal-plan":"";
-                  return valid ? <button key={i} onClick={()=>setSelectedDay(d)} aria-label={`${calendarYear}年${calendarMonth+1}月${d}日${states?`，${states}`:""}`} aria-pressed={d===selectedDay} className={`${d===selectedDay?"selected-day":""} ${isToday?"today":""} ${scheduleClass} ${isIdeaMonth&&d===16&&hasGenerated?"idea":""} ${dayImportantDays.length?"important-dot":""} ${dayStatus.kind==="rest"?"rest-day":""} ${dayStatus.kind==="adjusted-work"?"work-day":""} ${dayStatus.kind==="weekend"?"weekend-day":""}`}><span>{d}</span>{dayStatus.label&&<small className={`day-type ${dayStatus.kind}`}>{dayStatus.label}</small>}{dayImportantDays.length>0&&<small>重要</small>}</button> : <span key={i} aria-hidden="true"/>;
+                  return valid ? <button key={i} onClick={()=>setSelectedDay(d)} aria-label={`${calendarYear}年${calendarMonth+1}月${d}日${states?`，${states}`:""}`} aria-pressed={d===selectedDay} className={`${d===selectedDay?"selected-day":""} ${isToday?"today":""} ${scheduleClass} ${isIdeaMonth&&d===16&&hasGenerated?"idea":""} ${dayImportantDays.length?"important-dot":""} ${dayStatus.kind==="rest"?"rest-day":""} ${dayStatus.kind==="adjusted-work"?"work-day":""} ${dayStatus.kind==="weekend"?"weekend-day":""}`}><span>{d}</span>{dayStatus.label&&<small className={`day-type ${dayStatus.kind}`}>{dayStatus.label}</small>}{dayStatus.festivalName?<small className="festival-name">{dayStatus.festivalName}</small>:dayImportantDays.length>0&&<small className="important-label">重要</small>}</button> : <span key={i} aria-hidden="true"/>;
                 })}</div>
                 <div className="legend"><span><i className="personal-dot"/>我的计划</span><span><i className="solid-dot"/>共同安排</span><span><i className="ring-dot"/>AI 灵感</span><span><i className="rest-swatch"/>法定休息</span><span><i className="work-swatch"/>调休上班</span></div>
-                {calendarYear===holidaySource.year?<a className="holiday-source" href={holidaySource.url} target="_blank" rel="noreferrer">2026 年节假日 · 国务院办公厅安排（2025-11-04 发布）</a>:<p className="holiday-source">当前年份仅标注普通周末；官方节假日数据待年度通知发布后更新。</p>}
-                <section className="day-agenda"><p className="kicker">{calendarMonth+1}月{selectedDay}日</p>{(()=>{const dateKey=`${calendarYear}-${String(calendarMonth+1).padStart(2,"0")}-${String(selectedDay).padStart(2,"0")}`;const daySchedules=schedules.filter(schedule=>schedule.event_date===dateKey);const dayImportantDays=importantDaysOnDate(dateKey);if(daySchedules.length||dayImportantDays.length)return <div className="agenda-list">{daySchedules.map(schedule=><button key={schedule.id} className={`agenda-item ${schedule.visibility==="personal"?"personal-agenda":""}`} onClick={()=>openSchedule(schedule)}><i aria-hidden="true"/><span><b>{schedule.event_time}</b><small>{schedule.visibility==="shared"?"共同安排":"我的计划"}</small></span><div><b>{schedule.title}</b><small>{schedule.visibility==="shared"?(schedule.status==="confirmed"?"双方已接受":"等待确认"):"仅自己可见"} · {schedule.city}</small></div><em aria-hidden="true">›</em></button>)}{dayImportantDays.map(day=><button key={day.id} className="agenda-item important-agenda" onClick={() => go("important")}><i aria-hidden="true"/><span><b>全天</b></span><div><b>{day.title}</b><small>{day.visibility==="personal"?"我的重要日子":day.status==="confirmed"?"共同重要日子":"等待 TA 确认"} · {day.repeat_rule==="yearly"?"每年重复":"不重复"}</small></div><em aria-hidden="true">›</em></button>)}</div>;if(isIdeaMonth&&selectedDay===16&&hasGenerated)return <div className="idea-day"><span aria-hidden="true">✦</span><div><b>AI 轻量建议</b><p>周日下午适合去城市周边走走，尚未成为正式安排。</p></div><button onClick={()=>go("inspire")}>继续规划</button></div>;return <div className="empty-day"><span aria-hidden="true">☼</span><p>这一天还没有{hasRelationship?"共同安排、个人计划或重要日子":"个人计划或重要日子"}</p><button onClick={() => go("inspire")}>找点灵感</button></div>;})()}</section>
+                {hasRelationship&&<p className="calendar-sync-note">共同安排与重要日子约 5 秒自动同步；个人计划仍仅自己可见。</p>}
+                {calendarYear===holidaySource.year?<a className="holiday-source" href={holidaySource.url} target="_blank" rel="noreferrer">2026 年节假日 · 国务院办公厅安排（2025-11-04 发布）</a>:<p className="holiday-source">当前年份显示固定日期节日与普通周末；官方放假、调休数据待年度通知发布后更新。</p>}
+                <section className="day-agenda"><p className="kicker">{calendarMonth+1}月{selectedDay}日</p>{(()=>{const dateKey=`${calendarYear}-${String(calendarMonth+1).padStart(2,"0")}-${String(selectedDay).padStart(2,"0")}`;const dayStatus=calendarDayStatus(dateKey);const daySchedules=schedules.filter(schedule=>schedule.event_date===dateKey);const dayImportantDays=importantDaysOnDate(dateKey);const festival=dayStatus.festivalName?<div className="festival-banner"><span aria-hidden="true">日</span><div><b>{dayStatus.festivalName}</b><small>{dayStatus.kind==="rest"?"法定休息日":dayStatus.kind==="adjusted-work"?"调休上班日":"节日提醒"}</small></div></div>:null;let content;if(daySchedules.length||dayImportantDays.length)content=<div className="agenda-list">{daySchedules.map(schedule=><button key={schedule.id} className={`agenda-item ${schedule.visibility==="personal"?"personal-agenda":""}`} onClick={()=>openSchedule(schedule)}><i aria-hidden="true"/><span><b>{schedule.event_time}</b><small>{schedule.visibility==="shared"?"共同安排":"我的计划"}</small></span><div><b>{schedule.title}</b><small>{schedule.visibility==="shared"?(schedule.status==="confirmed"?"双方已接受":"等待确认"):"仅自己可见"} · {schedule.city}</small></div><em aria-hidden="true">›</em></button>)}{dayImportantDays.map(day=><button key={day.id} className="agenda-item important-agenda" onClick={() => go("important")}><i aria-hidden="true"/><span><b>全天</b></span><div><b>{day.title}</b><small>{day.visibility==="personal"?"我的重要日子":day.status==="confirmed"?"共同重要日子":"等待 TA 确认"} · {day.repeat_rule==="yearly"?"每年重复":"不重复"}</small></div><em aria-hidden="true">›</em></button>)}</div>;else if(isIdeaMonth&&selectedDay===16&&hasGenerated)content=<div className="idea-day"><span aria-hidden="true">✦</span><div><b>AI 轻量建议</b><p>周日下午适合去城市周边走走，尚未成为正式安排。</p></div><button onClick={()=>go("inspire")}>继续规划</button></div>;else content=<div className="empty-day"><span aria-hidden="true">☼</span><p>这一天还没有{hasRelationship?"共同安排、个人计划或重要日子":"个人计划或重要日子"}</p><button onClick={() => go("inspire")}>找点灵感</button></div>;return <>{festival}{content}</>;})()}</section>
                 {bottomNav("calendar")}
               </div>
             )}
