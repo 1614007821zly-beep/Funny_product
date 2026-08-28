@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { fetchAmapWeather, type AmapWeatherForecast, weatherPrompt } from "../../../lib/amap-weather";
 import { getChatGPTUser } from "../../chatgpt-auth";
 
 export const dynamic = "force-dynamic";
@@ -74,9 +75,10 @@ export async function POST(request: Request) {
   if (limit === "daily") return json({ error: "今天的 AI 灵感次数已用完，请明天再试。", code: "DAILY_LIMITED" }, 429);
   if (!await circuitAllowsRequest()) return json({ error: "AI 服务正在短暂恢复，请几分钟后再试。", code: "AI_CIRCUIT_OPEN" }, 503);
 
+  const weather = amapKey ? await fetchAmapWeather(amapKey, safeInput.city).catch(() => null) : null;
   let plans: GeneratedPlan[];
   try {
-    plans = await generatePlans(aiHubMixKey, safeInput);
+    plans = await generatePlans(aiHubMixKey, safeInput, weather);
     await recordCircuitSuccess().catch(() => undefined);
   } catch (error) {
     await recordCircuitFailure().catch(() => undefined);
@@ -87,10 +89,10 @@ export async function POST(request: Request) {
     ...plan,
     places: amapKey ? await searchAmapPlaces(amapKey, safeInput, plan.placeQuery).catch(() => []) : [],
   })));
-  return json({ plans: enriched, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置" } });
+  return json({ plans: enriched, weather, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
 }
 
-async function generatePlans(apiKey: string, input: Required<InspirationRequest>): Promise<GeneratedPlan[]> {
+async function generatePlans(apiKey: string, input: Required<InspirationRequest>, weather: AmapWeatherForecast | null): Promise<GeneratedPlan[]> {
   const promptLines = [
     input.partnerMood ? "你是情侣共同生活规划助手。请生成3个安全、现实、不过度浪漫化的约会灵感。" : "你是个人生活规划助手。请生成3个安全、现实、不过度浪漫化的外出灵感。",
     "返回 JSON：plans 正好3项；每项包含 title、summary、duration、budgetLabel、placeQuery、timeline；timeline 正好3项，每项包含 time、title、description。",
@@ -108,6 +110,10 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   ];
   if (input.partnerMood) promptLines.splice(7, 0, `TA状态：${input.partnerMood}`);
   if (input.special) promptLines.push(`需要特别照顾：${input.special}`);
+  if (weather) {
+    promptLines.push(`高德天气预报（${weather.reportTime}发布）：${weatherPrompt(weather)}`);
+    promptLines.push("只能在用户选择的时间落入上述预报日期时引用天气；超出预报范围或时间不确定时，不得推断天气。户外方案遇到雨雪或强风时必须给出室内替代。天气会变化，文案需提醒出发前复查。");
+  }
   const prompt = promptLines.join("\n");
 
   const response = await fetchWithNetworkRetry("https://aihubmix.com/v1/chat/completions", {
