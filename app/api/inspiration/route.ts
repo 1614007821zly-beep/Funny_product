@@ -18,6 +18,8 @@ type InspirationRequest = {
   radius?: number;
   longitude?: number;
   latitude?: number;
+  excludePlaceIds?: string[];
+  excludeCategories?: string[];
 };
 
 type AmapPlace = {
@@ -81,7 +83,7 @@ export async function POST(request: Request) {
 
   const safeInput = sanitizeInput(input);
   if (!safeInput.city) return json({ error: "请先填写城市。", code: "CITY_REQUIRED" }, 400);
-  if (containsContactDetails(Object.values(safeInput).flat().join(" "))) {
+  if (containsContactDetails([safeInput.city, ...safeInput.moods, safeInput.partnerMood, safeInput.vibe, safeInput.time, safeInput.space, safeInput.special, safeInput.district].join(" "))) {
     return json({ error: "灵感条件中请勿填写手机号、邮箱等联系方式。", code: "SENSITIVE_INPUT" }, 400);
   }
 
@@ -106,32 +108,36 @@ export async function POST(request: Request) {
     if (candidates.length) return candidateFallbackResponse(safeInput, candidates, candidateSearch.pool, weather, amapKey);
     return json({ error: "灵感暂时没有生成成功，请稍后重试。", code: "GENERATION_FAILED" }, 502);
   }
-  return json({ plans, weather, pool: candidateSearch.pool, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
+  const usedPlaceIds = new Set(plans.flatMap(plan => (plan.includedPlaces ?? plan.places ?? []).map(place => place.id)));
+  const morePlans = buildCandidateFallbackPlans(safeInput, candidates, 9, usedPlaceIds);
+  return json({ plans, morePlans, weather, pool: candidateSearch.pool, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
 }
 
 function candidateFallbackResponse(input: Required<InspirationRequest>, candidates: AmapPlace[], pool: CandidatePool, weather: AmapWeatherForecast | null, amapKey: string | undefined) {
-  return json({ plans: buildCandidateFallbackPlans(input, candidates), weather, pool, code: "REAL_PLACE_FALLBACK", source: { ai: "规则组合（AI 暂时繁忙）", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
+  const planPool = buildCandidateFallbackPlans(input, candidates, 12);
+  return json({ plans: planPool.slice(0, 3), morePlans: planPool.slice(3), weather, pool, code: "REAL_PLACE_FALLBACK", source: { ai: "规则组合（AI 暂时繁忙）", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
 }
 
-function buildCandidateFallbackPlans(input: Required<InspirationRequest>, candidates: AmapPlace[]): GeneratedPlan[] {
+function buildCandidateFallbackPlans(input: Required<InspirationRequest>, candidates: AmapPlace[], requestedCount = 3, existingUsedPlaceIds = new Set<string>()): GeneratedPlan[] {
   const startTimes = input.time === "现在出发" ? ["现在", "稍后", "今晚"] : input.time === "周末" ? ["14:00", "15:00", "18:00"] : ["18:30", "19:00", "19:30"];
-  const usedPlaceIds = new Set<string>();
-  return Array.from({ length: 3 }, (_, index) => {
+  const usedPlaceIds = new Set(existingUsedPlaceIds);
+  const planPool: GeneratedPlan[] = [];
+  for (let index = 0; index < requestedCount && usedPlaceIds.size < candidates.length; index += 1) {
     const composition = composePlacesForBudget(candidates, input, usedPlaceIds, candidates[index % candidates.length]);
     const primary = composition.primary;
-    usedPlaceIds.add(primary.id);
+    composition.included.forEach(place => usedPlaceIds.add(place.id));
     const reason = primary.recommendationReasons.slice(0, 2).join("，");
     const includedNames = composition.included.map(place => place.name).join("、");
     const timeline = composition.included.length > 1 ? [
-      { time: startTimes[index], title: primary.name, description: `先到${primary.name}，营业状态与价格请在出发前确认` },
+      { time: startTimes[index % startTimes.length], title: primary.name, description: `先到${primary.name}，营业状态与价格请在出发前确认` },
       { time: "中段", title: composition.included[1].name, description: `再前往${composition.included[1].name}，两处地点相距不超过约3公里` },
       { time: "结束前", title: "从容返程", description: "根据实时路线和当晚状态决定结束时间" },
     ] : [
-      { time: startTimes[index], title: "从容出发", description: `从${input.district || input.city}出发，先查看实时路线与天气` },
+      { time: startTimes[index % startTimes.length], title: "从容出发", description: `从${input.district || input.city}出发，先查看实时路线与天气` },
       { time: "到达前", title: "再次确认", description: "确认营业时间、价格和现场排队情况" },
       { time: "主要活动", title: primary.name, description: `在${primary.name}体验${primary.category}活动` },
     ];
-    return {
+    planPool.push({
       title: clean(`${includedNames}的${input.vibe || "轻松"}时光`, 50),
       summary: clean(`以真实地点${includedNames}组成安排，${reason}。${budgetMatchSummary(composition)}。`, 180),
       duration: input.time === "现在出发" ? "约 2 小时" : "约 2–3 小时",
@@ -145,8 +151,9 @@ function buildCandidateFallbackPlans(input: Required<InspirationRequest>, candid
       budgetMatch: composition.budgetMatch,
       searchRadius: input.radius,
       distanceVerified: validCoordinates(input.longitude, input.latitude),
-    };
-  });
+    });
+  }
+  return planPool;
 }
 
 async function generatePlans(apiKey: string, input: Required<InspirationRequest>, weather: AmapWeatherForecast | null, candidates: AmapPlace[]): Promise<GeneratedPlan[]> {
@@ -215,7 +222,8 @@ async function searchAmapCandidates(apiKey: string, input: Required<InspirationR
     const previous = bestById.get(place.id);
     if (!previous || place.score > previous.score) bestById.set(place.id, place);
   }
-  const ranked = [...bestById.values()].sort((left, right) => right.score - left.score || (left.distance ?? Infinity) - (right.distance ?? Infinity));
+  const excludedPlaceIds = new Set(input.excludePlaceIds);
+  const ranked = [...bestById.values()].filter(place => !excludedPlaceIds.has(place.id)).sort((left, right) => right.score - left.score || (left.distance ?? Infinity) - (right.distance ?? Infinity));
   const places = diversifyCandidates(ranked, input).slice(0, 60);
   return {
     places,
@@ -347,7 +355,7 @@ function candidateCategories(input: Required<InspirationRequest>) {
     : input.vibe === "热闹" ? ["夜市", "商场", "电影院", "剧院", "餐厅", "酒吧"]
     : ["咖啡馆", "公园", "书店", "商场", "餐厅", "电影院"];
   if (input.budget === "¥100以内") values.unshift("公园", "书店", "博物馆");
-  return [...new Set(values)].slice(0, 10);
+  return [...new Set(values)].filter(category => !input.excludeCategories.includes(category)).slice(0, 10);
 }
 
 function candidateSearchIntents(categories: string[]): SearchIntent[] {
@@ -422,6 +430,8 @@ function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> 
     radius: clampNumber(input.radius, 1000, 20000, 5000),
     longitude: finiteNumber(input.longitude),
     latitude: finiteNumber(input.latitude),
+    excludePlaceIds: Array.isArray(input.excludePlaceIds) ? input.excludePlaceIds.slice(0, 60).map(value => clean(value, 80)).filter(Boolean) : [],
+    excludeCategories: Array.isArray(input.excludeCategories) ? input.excludeCategories.slice(0, 20).map(value => clean(value, 30)).filter(Boolean) : [],
   };
 }
 

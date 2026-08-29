@@ -24,6 +24,9 @@ type WeatherForecast = { queryCity: string; city: string; province: string; adco
 type LocationPreferences = { city: string; district: string; districtSource: "none" | "auto" | "manual"; radius: number; longitude: number | null; latitude: number | null; label: string };
 type ResolvedLocation = { city: string; district: string; businessArea: string; displayName: string; longitude: number; latitude: number };
 type CandidatePool = { rawCount: number; candidateCount: number; categories: string[]; pagesFetched: number };
+type GeneratedPlanResponse = { title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean };
+type FeedbackReason = "太远" | "太贵" | "太普通" | "不符合状态" | "地点不合适";
+type RecommendationFeedback = { placeIds: string[]; brands: string[]; categories: string[]; maxDistance: number | null; maxCost: number | null };
 
 const LEGACY_STORAGE_KEYS = ["love-diary-v112", "love-diary-v17", "love-diary-v16", "love-diary-v15", "love-diary-v14"];
 const INSPIRATION_DRAFT_KEY = "love-diary-inspiration-draft-v1";
@@ -40,6 +43,37 @@ const popularCities = ["北京", "上海", "广州", "深圳", "杭州", "成都
 const cityOptions = [
   ...popularCities, "天津", "郑州", "青岛", "宁波", "厦门", "福州", "济南", "合肥", "昆明", "大连", "沈阳", "哈尔滨", "长春", "石家庄", "太原", "南昌", "南宁", "贵阳", "海口", "三亚", "兰州", "西宁", "银川", "乌鲁木齐", "拉萨", "呼和浩特", "珠海", "佛山", "东莞", "无锡", "常州", "温州", "绍兴", "嘉兴", "金华", "台州", "泉州", "烟台", "潍坊", "徐州", "扬州", "镇江", "南通", "洛阳", "开封", "宜昌", "襄阳", "株洲", "桂林", "柳州", "大理", "丽江", "绵阳", "乐山", "秦皇岛", "唐山", "保定", "包头", "威海", "中山", "惠州", "汕头", "湛江", "香港", "澳门", "台北",
 ];
+const emptyRecommendationFeedback = (): RecommendationFeedback => ({ placeIds: [], brands: [], categories: [], maxDistance: null, maxCost: null });
+const recommendationBrandKey = (name: string) => name.toLowerCase().replace(/[（(].*$/u, "").replace(/(?:旗舰店|体验店|门店|店)$/u, "").replace(/\s+/g, "").slice(0, 30);
+const planIdentity = (plan: Plan) => plan.includedPlaces?.map(place => place.id).join("|") || plan.places?.[0]?.id || plan.title;
+
+function planAllowedByFeedback(plan: Plan, feedback: RecommendationFeedback) {
+  const places = plan.includedPlaces?.length ? plan.includedPlaces : plan.places ?? [];
+  if (places.some(place => feedback.placeIds.includes(place.id) || feedback.brands.includes(recommendationBrandKey(place.name)))) return false;
+  if (places.some(place => feedback.categories.includes(place.category))) return false;
+  const distance = plan.places?.[0]?.distance;
+  if (feedback.maxDistance !== null && (distance === null || distance === undefined || distance >= feedback.maxDistance)) return false;
+  if (feedback.maxCost !== null && (plan.estimatedCost === null || plan.estimatedCost === undefined || plan.estimatedCost >= feedback.maxCost)) return false;
+  return true;
+}
+
+function toPlan(plan: GeneratedPlanResponse, index: number, time: string, budget: string, fallback: boolean): Plan {
+  return {
+    eyebrow: index === 0 ? `主方案 · ${fallback ? "真实地点推荐" : "AI 实时生成"}` : `备选 · ${fallback ? "真实地点推荐" : "AI 实时生成"}`,
+    title: plan.title,
+    meta: `${time} · 预算偏好 ${budget}`,
+    desc: plan.summary,
+    tone: ["primary", "cream", "lilac"][index] ?? "cream",
+    duration: plan.duration,
+    timeline: plan.timeline,
+    places: plan.places,
+    includedPlaces: plan.includedPlaces,
+    estimatedCost: plan.estimatedCost,
+    budgetMatch: plan.budgetMatch,
+    searchRadius: plan.searchRadius,
+    distanceVerified: plan.distanceVerified,
+  };
+}
 
 function Pill({ children, active, onClick }: { children: React.ReactNode; active?: boolean; onClick?: () => void }) {
   return <button type="button" className={`pill ${active ? "active" : ""}`} aria-pressed={Boolean(active)} onClick={onClick}>{children}</button>;
@@ -135,6 +169,9 @@ export default function Home() {
   const [clock, setClock] = useState("--:--");
   const [reportReason, setReportReason] = useState("");
   const [aiPlans, setAiPlans] = useState<Plan[] | null>(null);
+  const [morePlans, setMorePlans] = useState<Plan[]>([]);
+  const [seenPlaceIds, setSeenPlaceIds] = useState<string[]>([]);
+  const [recommendationFeedback, setRecommendationFeedback] = useState<RecommendationFeedback>(emptyRecommendationFeedback);
   const [generationError, setGenerationError] = useState("");
   const [weather, setWeather] = useState<WeatherForecast | null>(null);
   const [candidatePool, setCandidatePool] = useState<CandidatePool | null>(null);
@@ -144,6 +181,7 @@ export default function Home() {
     title: aiPlans ? plan.title : choices.space === "室内" ? ["独立书店与安静晚餐", "双人陶艺与甜品", "小剧场与夜宵"][index] : choices.mood === "想热闹" ? ["夜市寻味与现场音乐", "双人保龄球与夜宵", "城市夜游与甜品"][index] : plan.title,
     meta: `${choices.time} · 预算偏好 ${choices.budget}`,
   })), [aiPlans, choices]);
+  const eligibleMorePlans = useMemo(() => morePlans.filter(plan => planAllowedByFeedback(plan, recommendationFeedback)), [morePlans, recommendationFeedback]);
   const currentPlan = dynamicPlans[selectedPlan];
   const hasRelationship = Boolean(account?.relationship?.partner_id);
   const inspirationCity = locationPrefs.city || profile.city;
@@ -544,29 +582,36 @@ export default function Home() {
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
     );
   }
-  async function generate(shouldFail = false) {
+  async function generate(shouldFail = false, refreshPool = false, feedbackOverride = recommendationFeedback) {
     requestController.current?.abort();
     if (shouldFail) { setGenerationError("这是手动触发的失败状态预览。"); setLoadingFailed(true); go("loading"); return; }
     const controller = new AbortController();
     requestController.current = controller;
+    const activeFeedback = refreshPool ? feedbackOverride : emptyRecommendationFeedback();
+    if (!refreshPool) { setRecommendationFeedback(activeFeedback); setSeenPlaceIds([]); }
     setGenerationError(""); setLoadingFailed(false); setCandidatePool(null); go("loading");
     try {
       const response = await fetch("/api/inspiration", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ city: inspirationCity, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: locationPrefs.district, districtSource: locationPrefs.districtSource, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude }),
+        body: JSON.stringify({ city: inspirationCity, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: locationPrefs.district, districtSource: locationPrefs.districtSource, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude, excludePlaceIds: refreshPool ? [...new Set([...seenPlaceIds, ...activeFeedback.placeIds])] : [], excludeCategories: refreshPool ? activeFeedback.categories : [] }),
         signal: controller.signal,
       });
-      const data = await response.json() as { plans?: Array<{ title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean }>; weather?: WeatherForecast | null; pool?: CandidatePool; error?: string; code?: string };
+      const data = await response.json() as { plans?: GeneratedPlanResponse[]; morePlans?: GeneratedPlanResponse[]; weather?: WeatherForecast | null; pool?: CandidatePool; error?: string; code?: string };
       if (["AI_NOT_CONFIGURED", "GENERATION_FAILED", "AI_CIRCUIT_OPEN"].includes(data.code ?? "")) {
-        setAiPlans(null); setSelectedPlan(0); setHasGenerated(true); go("results");
+        setAiPlans(null); setMorePlans([]); setSelectedPlan(0); setHasGenerated(true); go("results");
         notify(data.code === "AI_NOT_CONFIGURED" ? "AI 尚未配置，当前显示备用方案" : "AI 服务暂时繁忙，已切换为可继续编辑的备用方案");
         return;
       }
       if (!response.ok || !data.plans) throw new Error(data.error || "灵感暂时没有生成成功。");
       if (data.weather) setWeather(data.weather);
       setCandidatePool(data.pool ?? null);
-      setAiPlans(data.plans.map((plan, index) => ({ eyebrow: index === 0 ? `主方案 · ${data.code === "REAL_PLACE_FALLBACK" ? "真实地点推荐" : "AI 实时生成"}` : `备选 · ${data.code === "REAL_PLACE_FALLBACK" ? "真实地点推荐" : "AI 实时生成"}`, title: plan.title, meta: `${choices.time} · 预算偏好 ${choices.budget}`, desc: plan.summary, tone: ["primary", "cream", "lilac"][index] ?? "cream", duration: plan.duration, timeline: plan.timeline, places: plan.places, includedPlaces: plan.includedPlaces, estimatedCost: plan.estimatedCost, budgetMatch: plan.budgetMatch, searchRadius: plan.searchRadius, distanceVerified: plan.distanceVerified })));
+      const fallback = data.code === "REAL_PLACE_FALLBACK";
+      const displayedPlans = data.plans.map((plan, index) => toPlan(plan, index, choices.time, choices.budget, fallback));
+      setAiPlans(displayedPlans);
+      setMorePlans((data.morePlans ?? []).map((plan, index) => toPlan(plan, index + 3, choices.time, choices.budget, true)));
+      const displayedPlaceIds = displayedPlans.flatMap(plan => (plan.includedPlaces?.length ? plan.includedPlaces : plan.places ?? []).map(place => place.id));
+      setSeenPlaceIds(current => [...new Set([...(refreshPool ? current : []), ...displayedPlaceIds])]);
       setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); setHasGenerated(true); go("results");
       if (data.code === "REAL_PLACE_FALLBACK") notify("AI 暂时繁忙，已根据真实地点生成可执行方案");
     } catch (error) {
@@ -577,6 +622,38 @@ export default function Home() {
       if (requestController.current === controller) requestController.current = null;
     }
   }
+  function replaceSelectedPlan(feedback = recommendationFeedback, notice = "已换成一个未看过的方案") {
+    const next = morePlans.find(plan => planAllowedByFeedback(plan, feedback));
+    if (!next) { notify("本批候选已看完，正在寻找新的地点"); void generate(false, true, feedback); return; }
+    const identity = planIdentity(next);
+    setMorePlans(current => current.filter(plan => planIdentity(plan) !== identity));
+    setAiPlans(current => current?.map((plan, index) => index === selectedPlan ? next : plan) ?? current);
+    setSelectedPlaceIndexes(current => current.map((value, index) => index === selectedPlan ? 0 : value));
+    setSeenPlaceIds(current => [...new Set([...current, ...(next.includedPlaces?.length ? next.includedPlaces : next.places ?? []).map(place => place.id)])]);
+    notify(notice);
+  }
+  function replacePlanBatch() {
+    if (eligibleMorePlans.length < 3) { notify("本批剩余方案不足，正在补充新的地点"); void generate(false, true); return; }
+    const batch = eligibleMorePlans.slice(0, 3);
+    const identities = new Set(batch.map(planIdentity));
+    setAiPlans(batch);
+    setMorePlans(current => current.filter(plan => !identities.has(planIdentity(plan))));
+    setSeenPlaceIds(current => [...new Set([...current, ...batch.flatMap(plan => (plan.includedPlaces?.length ? plan.includedPlaces : plan.places ?? []).map(place => place.id))])]);
+    setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); notify("已换成 3 个未看过的方案");
+  }
+  function dislikeCurrentPlan(reason: FeedbackReason) {
+    const places = currentPlan.includedPlaces?.length ? currentPlan.includedPlaces : currentPlan.places ?? [];
+    const primary = currentPlan.places?.[0];
+    const nextFeedback: RecommendationFeedback = {
+      placeIds: [...new Set([...recommendationFeedback.placeIds, ...places.map(place => place.id)])],
+      brands: [...new Set([...recommendationFeedback.brands, ...places.map(place => recommendationBrandKey(place.name))])],
+      categories: ["太普通", "不符合状态"].includes(reason) && primary?.category ? [...new Set([...recommendationFeedback.categories, primary.category])] : recommendationFeedback.categories,
+      maxDistance: reason === "太远" && primary?.distance !== null && primary?.distance !== undefined ? Math.min(recommendationFeedback.maxDistance ?? Infinity, Math.max(0, primary.distance)) : recommendationFeedback.maxDistance,
+      maxCost: reason === "太贵" && currentPlan.estimatedCost !== null && currentPlan.estimatedCost !== undefined ? Math.min(recommendationFeedback.maxCost ?? Infinity, Math.max(0, currentPlan.estimatedCost)) : recommendationFeedback.maxCost,
+    };
+    setRecommendationFeedback(nextFeedback);
+    replaceSelectedPlan(nextFeedback, `已记住“${reason}”，并更换当前方案`);
+  }
   function resetJourney() {
     setCompleted(false); setMyConfirmed(false); setTaConfirmed(false); setTaskLinked(false); setTaskContextActive(false); setMemoryDeleted(false); void loadSharedSchedule(true); void loadSharedExperiences(true); go("home");
   }
@@ -586,7 +663,7 @@ export default function Home() {
     ["love-diary-legacy-backup", "love-diary-legacy-plan-migrated", "love-diary-legacy-plan-dismissed", "love-diary-solo-user"].forEach(key => window.localStorage.removeItem(key));
     setChoices({ mood: "想放松", taMood: "和我一样", vibe: "安静", time: "今晚", budget: "¥100–300", space: "都可以", special: "" });
     setMyStates(["想放松"]); setCustomStates([]); setLocationPrefs({ city: "", district: "", districtSource: "none", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
-    setLegacyPlan(null); setSoloMode(false); setAiPlans(null); setHasGenerated(false); setCompleted(false); setTaskContextActive(false); setTaskLinked(false); setMemoryCreated(false); setMemoryContentRetracted(false); setRelationshipExited(false); setSafetyExitUsed(false); setPanel("");
+    setLegacyPlan(null); setSoloMode(false); setAiPlans(null); setMorePlans([]); setSeenPlaceIds([]); setRecommendationFeedback(emptyRecommendationFeedback()); setHasGenerated(false); setCompleted(false); setTaskContextActive(false); setTaskLinked(false); setMemoryCreated(false); setMemoryContentRetracted(false); setRelationshipExited(false); setSafetyExitUsed(false); setPanel("");
     history.current = []; void loadSharedSchedule(true); void loadSharedExperiences(true); go("welcome", true);
   }
 
@@ -1022,7 +1099,9 @@ export default function Home() {
               <div className="page result-page">
                 <header><Back onClick={() => back("inspire")}/><span>{hasRelationship?"为你们想到的":"为你想到的"}</span><button className="text-button" onClick={() => go("inspire")}>调整条件</button></header>
                 <div className="result-intro"><p className="kicker">{inspirationCity} · {choices.time} · {choices.mood} · {locationPrefs.longitude===null?"商圈搜索 · 距离待定位":`搜索范围 ${locationPrefs.radius/1000} km`}</p><h2>{choices.space === "室内" ? <>留在室内，<br/>也能认真约会。</> : <>不赶时间，<br/>也不辜负今晚。</>}</h2>{inspirationWeather&&<p className="weather-summary">高德天气 · {inspirationWeather.date} · {weatherLabel(inspirationWeather)}</p>}{candidatePool&&candidatePool.candidateCount>0&&<p className="candidate-pool-summary">已从高德返回的 {candidatePool.rawCount} 条结果中，筛出 {candidatePool.candidateCount} 个符合范围与预算的候选地点</p>}</div>
-                <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => setSelectedPlan(0)}><div className="plan-top"><span>主灵感 · {aiPlans ? "真实地点组合" : "演示方案"}</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · 预算偏好 {choices.budget} · {choices.space}</p><b className="plan-introduction-label">方案简介</b><p>{dynamicPlans[0].desc}</p>{dynamicPlans[0].places?.[0]&&<span className="place-preview"><b>真实地点</b>{dynamicPlans[0].includedPlaces?.map(place=>place.name).join(" + ")||dynamicPlans[0].places[0].name} · {placeDistance(dynamicPlans[0].places[0])}</span>}<span className="plan-cost">{planBudgetText(dynamicPlans[0],choices.budget,hasRelationship)} · {planDistanceText(dynamicPlans[0],locationPrefs.radius)}</span>{choices.special.trim()&&<span className="prep-note">特别照顾：{choices.special.trim()}</span>}</button><div className="alternative-title"><b>也可以试试</b><button onClick={() => {setSelectedPlan((selectedPlan+1)%3);notify("已将下一方案设为主方案");}}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => setSelectedPlan(i)}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p>{plan.places?.[0]&&<p className="alternative-place">{plan.includedPlaces?.map(place=>place.name).join(" + ")||plan.places[0].name} · {placeDistance(plan.places[0])}</p>}<small className="alternative-cost">{planBudgetText(plan,choices.budget,hasRelationship)}</small></div><i aria-hidden="true">›</i></button>})}</div>
+                <div className="result-pool-actions"><span>{eligibleMorePlans.length>0?`本批还有 ${eligibleMorePlans.length} 个未展示方案`:"本批候选已接近看完"}</span><button type="button" onClick={replacePlanBatch}>换一批</button></div>
+                <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => setSelectedPlan(0)}><div className="plan-top"><span>主灵感 · {aiPlans ? "真实地点组合" : "演示方案"}</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · 预算偏好 {choices.budget} · {choices.space}</p><b className="plan-introduction-label">方案简介</b><p>{dynamicPlans[0].desc}</p>{dynamicPlans[0].places?.[0]&&<span className="place-preview"><b>真实地点</b>{dynamicPlans[0].includedPlaces?.map(place=>place.name).join(" + ")||dynamicPlans[0].places[0].name} · {placeDistance(dynamicPlans[0].places[0])}</span>}<span className="plan-cost">{planBudgetText(dynamicPlans[0],choices.budget,hasRelationship)} · {planDistanceText(dynamicPlans[0],locationPrefs.radius)}</span>{choices.special.trim()&&<span className="prep-note">特别照顾：{choices.special.trim()}</span>}</button><div className="alternative-title"><b>也可以试试</b><button type="button" onClick={() => replaceSelectedPlan()}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => setSelectedPlan(i)}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p>{plan.places?.[0]&&<p className="alternative-place">{plan.includedPlaces?.map(place=>place.name).join(" + ")||plan.places[0].name} · {placeDistance(plan.places[0])}</p>}<small className="alternative-cost">{planBudgetText(plan,choices.budget,hasRelationship)}</small></div><i aria-hidden="true">›</i></button>})}</div>
+                <section className="plan-feedback" aria-labelledby="plan-feedback-title"><div><b id="plan-feedback-title">这条灵感不合适？</b><small>选择原因后会立即更换，本次浏览不再推荐相同地点或品牌。</small></div><div>{(["太远","太贵","太普通","不符合状态","地点不合适"] as FeedbackReason[]).map(reason=><button type="button" key={reason} onClick={()=>dislikeCurrentPlan(reason)}>{reason}</button>)}</div></section>
                 <div className="sticky-cta"><button className="primary-button" onClick={() => go("plan")}>查看详细计划 <Arrow /></button></div>
               </div>
             )}

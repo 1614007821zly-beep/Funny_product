@@ -47,6 +47,10 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(api, /沉浸式体验.*香水手作.*银饰工坊.*玻璃工坊.*马术.*室内滑雪.*攀岩/s);
   assert.match(api, /优先新奇体验类活动/);
   assert.match(api, /usedCategories/);
+  assert.match(api, /morePlans/);
+  assert.match(api, /buildCandidateFallbackPlans\(input, candidates, 12\)/);
+  assert.match(api, /excludePlaceIds/);
+  assert.match(api, /excludeCategories/);
   assert.match(api, /pool: candidateSearch\.pool/);
   assert.match(api, /matchesCategory/);
   assert.match(api, /手机\|电脑\|家电\|汽车/);
@@ -69,5 +73,11 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(page, /方案简介/);
   assert.match(page, /完整方案介绍/);
   assert.match(page, /共同安排仍需双方分别确认/);
+  assert.match(page, /本批还有/);
+  assert.match(page, /换一批/);
+  assert.match(page, /replaceSelectedPlan/);
+  assert.match(page, /太远.*太贵.*太普通.*不符合状态.*地点不合适/s);
+  assert.match(page, /planAllowedByFeedback/);
+  assert.match(page, /本次浏览不再推荐相同地点或品牌/);
   assert.doesNotMatch(page, /format\(260\)/);
 });
