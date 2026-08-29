@@ -78,7 +78,8 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(api, /aihubmix\.com\/v1\/chat\/completions/);
   assert.match(api, /lfm-2\.5-2\.6b-free/);
   assert.match(api, /response_format/);
-  assert.match(api, /while \(timeline\.length < 3\)/);
+  assert.match(api, /const timeline = composition\.included\.length > 1/);
+  assert.match(api, /title: "从容出发"/);
   assert.match(api, /fetchWithNetworkRetry/);
   assert.match(api, /restapi\.amap\.com\/v5\/place\/text/);
   assert.match(api, /restapi\.amap\.com\/v5\/place\/around/);

@@ -46,7 +46,15 @@ type GeneratedPlan = {
   placeId?: string;
   timeline: Array<{ time: string; title: string; description: string }>;
   places?: AmapPlace[];
+  includedPlaces?: AmapPlace[];
+  estimatedCost?: number | null;
+  budgetMatch?: "matched" | "unknown" | "under";
+  searchRadius?: number;
+  distanceVerified?: boolean;
 };
+
+type BudgetBand = { min: number; max: number };
+type PlaceComposition = { primary: AmapPlace; included: AmapPlace[]; estimatedCost: number | null; budgetMatch: "matched" | "unknown" | "under" };
 
 const MINUTE_LIMIT = 6;
 const DAILY_LIMIT = 50;
@@ -103,23 +111,36 @@ function candidateFallbackResponse(input: Required<InspirationRequest>, candidat
 
 function buildCandidateFallbackPlans(input: Required<InspirationRequest>, candidates: AmapPlace[]): GeneratedPlan[] {
   const startTimes = input.time === "现在出发" ? ["现在", "稍后", "今晚"] : input.time === "周末" ? ["14:00", "15:00", "18:00"] : ["18:30", "19:00", "19:30"];
+  const usedPlaceIds = new Set<string>();
   return Array.from({ length: 3 }, (_, index) => {
-    const primary = candidates[index % candidates.length];
-    const alternatives = candidates.filter(place => place.id !== primary.id).sort((left, right) => Number(right.category === primary.category) - Number(left.category === primary.category) || right.score - left.score).slice(0, 2);
+    const composition = composePlacesForBudget(candidates, input, usedPlaceIds, candidates[index % candidates.length]);
+    const primary = composition.primary;
+    usedPlaceIds.add(primary.id);
     const reason = primary.recommendationReasons.slice(0, 2).join("，");
+    const includedNames = composition.included.map(place => place.name).join("、");
+    const timeline = composition.included.length > 1 ? [
+      { time: startTimes[index], title: primary.name, description: `先到${primary.name}，营业状态与价格请在出发前确认` },
+      { time: "中段", title: composition.included[1].name, description: `再前往${composition.included[1].name}，两处地点相距不超过约3公里` },
+      { time: "结束前", title: "从容返程", description: "根据实时路线和当晚状态决定结束时间" },
+    ] : [
+      { time: startTimes[index], title: "从容出发", description: `从${input.district || input.city}出发，先查看实时路线与天气` },
+      { time: "到达前", title: "再次确认", description: "确认营业时间、价格和现场排队情况" },
+      { time: "主要活动", title: primary.name, description: `在${primary.name}体验${primary.category}活动` },
+    ];
     return {
-      title: clean(`${primary.name}的${input.vibe || "轻松"}时光`, 50),
-      summary: clean(`以真实地点${primary.name}为核心安排，${reason}。行程保持简单，具体营业状态与价格在出发前再次确认。`, 180),
+      title: clean(`${includedNames}的${input.vibe || "轻松"}时光`, 50),
+      summary: clean(`以真实地点${includedNames}组成安排，${reason}。${budgetMatchSummary(composition)}。`, 180),
       duration: input.time === "现在出发" ? "约 2 小时" : "约 2–3 小时",
       budgetLabel: input.budget,
       placeQuery: primary.category,
       placeId: primary.id,
-      timeline: [
-        { time: startTimes[index], title: "从容出发", description: `从${input.district || input.city}出发，先查看实时路线与天气` },
-        { time: "到达前", title: "再次确认", description: "确认营业时间、价格和现场排队情况，不合适时可切换候选地点" },
-        { time: "主要活动", title: primary.name, description: `在${primary.name}体验${primary.category}活动，不额外编造商家服务` },
-      ],
-      places: [primary, ...alternatives],
+      timeline,
+      places: [primary],
+      includedPlaces: composition.included,
+      estimatedCost: composition.estimatedCost,
+      budgetMatch: composition.budgetMatch,
+      searchRadius: input.radius,
+      distanceVerified: validCoordinates(input.longitude, input.latitude),
     };
   });
 }
@@ -146,7 +167,7 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   ];
   if (input.partnerMood) promptLines.splice(7, 0, `TA状态：${input.partnerMood}`);
   if (input.special) promptLines.push(`需要特别照顾：${input.special}`);
-  promptLines.push("预算是硬约束。不得建议超过预算上限的消费；地点价格未知时必须明确写“价格待确认”，不得声称符合预算；不得编造精确总价。");
+  promptLines.push("预算是目标区间而不是页面装饰：¥100以内为0–100元，¥100–300为100–300元，¥300+为至少300元。不得建议超过有限预算的消费；地点价格未知时必须明确写“价格待确认”，不得声称符合预算；不得编造精确总价。最终地点组合与费用由服务端校验。");
   if (candidateLines.length) promptLines.push(`真实地点候选（只能从中选择）：\n${candidateLines.join("\n")}`);
   if (weather) {
     promptLines.push(`高德天气预报（${weather.reportTime}发布）：${weatherPrompt(weather)}`);
@@ -178,7 +199,7 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   const parsed = JSON.parse(stripCodeFence(text)) as { plans?: GeneratedPlan[] };
   if (!Array.isArray(parsed.plans) || parsed.plans.length !== 3) throw new Error("AIHubMix returned an invalid plan count");
   const usedPlaceIds = new Set<string>();
-  return parsed.plans.map((plan, index) => validatePlan(plan, candidates, usedPlaceIds, index, input.budget));
+  return parsed.plans.map((plan, index) => validatePlan(plan, candidates, usedPlaceIds, index, input));
 }
 
 async function searchAmapCandidates(apiKey: string, input: Required<InspirationRequest>): Promise<AmapPlace[]> {
@@ -189,7 +210,30 @@ async function searchAmapCandidates(apiKey: string, input: Required<InspirationR
     const previous = bestById.get(place.id);
     if (!previous || place.score > previous.score) bestById.set(place.id, place);
   }
-  return [...bestById.values()].sort((left, right) => right.score - left.score || (left.distance ?? Infinity) - (right.distance ?? Infinity)).slice(0, 15);
+  const ranked = [...bestById.values()].sort((left, right) => right.score - left.score || (left.distance ?? Infinity) - (right.distance ?? Infinity));
+  return diversifyCandidates(ranked, input).slice(0, 18);
+}
+
+function diversifyCandidates(candidates: AmapPlace[], input: Required<InspirationRequest>) {
+  const brands = new Set<string>();
+  const uniqueBrands = candidates.filter(place => {
+    const key = brandKey(place.name);
+    if (brands.has(key)) return false;
+    brands.add(key);
+    return true;
+  });
+  if (input.radius < 10_000 || !validCoordinates(input.longitude, input.latitude)) return uniqueBrands;
+  const bands = [
+    uniqueBrands.filter(place => place.distance !== null && place.distance <= 3_000),
+    uniqueBrands.filter(place => place.distance !== null && place.distance > 3_000 && place.distance <= 6_000),
+    uniqueBrands.filter(place => place.distance !== null && place.distance > 6_000 && place.distance <= input.radius),
+  ];
+  const seeded = bands.flatMap(band => band.slice(0, 1));
+  return [...seeded, ...uniqueBrands.filter(place => !seeded.some(seed => seed.id === place.id))];
+}
+
+function brandKey(name: string) {
+  return name.toLowerCase().replace(/[（(].*$/u, "").replace(/(?:旗舰店|体验店|门店|店)$/u, "").replace(/\s+/g, "").slice(0, 30);
 }
 
 async function searchAmapCategory(apiKey: string, input: Required<InspirationRequest>, category: string): Promise<AmapPlace[]> {
@@ -200,7 +244,7 @@ async function searchAmapCategory(apiKey: string, input: Required<InspirationReq
   url.searchParams.set("keywords", `${manualDistrict || !hasCoordinates ? input.district ? `${input.district} ` : "" : ""}${category}`.slice(0, 80));
   url.searchParams.set("region", input.city);
   url.searchParams.set("city_limit", "true");
-  url.searchParams.set("page_size", "12");
+  url.searchParams.set("page_size", "20");
   url.searchParams.set("show_fields", "business");
   if (hasCoordinates && !manualDistrict) {
     url.searchParams.set("location", `${input.longitude.toFixed(6)},${input.latitude.toFixed(6)}`);
@@ -221,23 +265,38 @@ function parseCandidate(poi: Record<string, unknown>, input: Required<Inspiratio
   const location = stringValue(poi.location);
   if (!id || !name || !/^\d{2,3}\.\d+,-?\d{1,2}\.\d+$/.test(location)) return [];
   const business = objectValue(poi.business);
+  const type = clean(poi.type, 120);
+  if (!matchesCategory(name, type, category)) return [];
   const businessArea = clean(business.business_area, 40);
   const rawAddress = clean(poi.address, 100);
   if (!rawAddress && !businessArea) return [];
   const status = clean(business.business_status, 20);
   if (/(暂停营业|停止营业|已关闭|永久关闭)/u.test(status)) return [];
   const distance = numberValue(poi.distance) ?? geographicDistance(input.longitude, input.latitude, location);
+  if (distance !== null && validCoordinates(input.longitude, input.latitude) && distance > input.radius) return [];
   const rating = clean(business.rating, 10);
   const cost = clean(business.cost, 10);
   const address = rawAddress || `${clean(poi.adname, 40)}${businessArea}`;
   const scored = scoreCandidate({ name, address, businessArea, distance, rating, cost, openTimeToday: clean(business.opentime_today, 60), category }, input);
   if (!scored.budgetEligible) return [];
-  return [{ id, name, address, location, type: clean(poi.type, 120), distance, businessArea, rating, cost, openTimeToday: clean(business.opentime_today, 60), category, recommendationReasons: scored.reasons, score: scored.score, verifiedBy: "amap" }];
+  return [{ id, name, address, location, type, distance, businessArea, rating, cost, openTimeToday: clean(business.opentime_today, 60), category, recommendationReasons: scored.reasons, score: scored.score, verifiedBy: "amap" }];
+}
+
+function matchesCategory(name: string, type: string, category: string) {
+  const text = `${name}${type}`;
+  if (/(手作体验|陶艺馆)/u.test(category)) return /(手作|陶艺|DIY|拼豆|烘焙|银饰|绘画|木工|皮具|蜡烛|流体熊)/iu.test(text) && !/(手机|电脑|家电|汽车).*体验店/iu.test(text);
+  if (category === "现场演出") return /(演出|音乐现场|livehouse|剧场|剧院|音乐厅)/iu.test(text);
+  return true;
 }
 
 function candidateCategories(input: Required<InspirationRequest>) {
   const lowMobility = /(少走路|腿脚|无障碍|轮椅|行动不便)/u.test(input.special);
-  const values = lowMobility ? ["咖啡馆", "商场", "博物馆", "美术馆", "电影院"]
+  const highBudget = input.budget === "¥300+";
+  const values = highBudget && lowMobility ? ["餐厅", "剧院", "电影院", "商场", "美术馆"]
+    : highBudget && input.space === "户外" ? ["景区", "游船", "主题乐园", "露营地", "餐厅", "演出"]
+    : highBudget && input.vibe === "安静" ? ["餐厅", "剧院", "陶艺馆", "手作体验", "美术馆", "电影院"]
+    : highBudget ? ["餐厅", "剧院", "现场演出", "手作体验", "电影院", "酒吧"]
+    : lowMobility ? ["咖啡馆", "商场", "博物馆", "美术馆", "电影院"]
     : input.space === "室内" ? ["咖啡馆", "书店", "博物馆", "美术馆", "电影院", "商场", "餐厅", "陶艺馆"]
     : input.space === "户外" ? ["公园", "景区", "夜市", "户外休闲", "餐厅"]
     : input.vibe === "安静" ? ["咖啡馆", "书店", "博物馆", "美术馆", "公园", "餐厅"]
@@ -254,7 +313,9 @@ function scoreCandidate(place: Pick<AmapPlace, "name" | "address" | "businessAre
   if (input.district && locationText.includes(input.district)) { score += input.districtSource === "manual" ? 24 : 12; reasons.push(`匹配${input.district}`); }
   else if (input.districtSource === "manual" && input.district) { score += 6; reasons.push(`来自${input.district}检索结果`); }
   if (place.distance !== null) {
-    const distanceScore = place.distance <= 1000 ? 24 : place.distance <= 3000 ? 19 : place.distance <= 5000 ? 13 : place.distance <= input.radius ? 8 : 0;
+    const distanceScore = input.radius >= 10_000
+      ? place.distance <= 1000 ? 12 : place.distance <= 3000 ? 15 : place.distance <= 6000 ? 17 : place.distance <= input.radius ? 14 : 0
+      : place.distance <= 1000 ? 24 : place.distance <= 3000 ? 19 : place.distance <= 5000 ? 13 : place.distance <= input.radius ? 8 : 0;
     score += input.districtSource === "manual" ? Math.min(distanceScore, 8) : distanceScore;
     reasons.push(place.distance < 1000 ? `距离约${Math.max(100, Math.round(place.distance / 100) * 100)}米` : `距离约${(place.distance / 1000).toFixed(1)}公里`);
   }
@@ -262,14 +323,14 @@ function scoreCandidate(place: Pick<AmapPlace, "name" | "address" | "businessAre
   if (Number.isFinite(rating) && rating > 0) { score += rating >= 4.5 ? 20 : rating >= 4 ? 15 : rating >= 3.5 ? 8 : 0; reasons.push(`高德评分${rating.toFixed(1)}`); }
   const cost = Number(place.cost);
   const people = input.partnerMood ? 2 : 1;
-  const maxBudget = budgetMaximum(input.budget);
+  const band = budgetBand(input.budget);
   if (Number.isFinite(cost) && cost > 0) {
     const totalCost = cost * people;
-    if (totalCost > maxBudget) return { score: -Infinity, reasons: [], budgetEligible: false };
-    score += 12;
+    if (totalCost > band.max) return { score: -Infinity, reasons: [], budgetEligible: false };
+    score += totalCost >= band.min ? 24 : Math.max(4, Math.round(14 * totalCost / Math.max(1, band.min)));
     reasons.push(`${people === 2 ? "两人地点" : "地点"}参考约¥${Math.round(totalCost)}`);
   } else {
-    if (Number.isFinite(maxBudget)) score -= 8;
+    score -= Number.isFinite(band.max) ? 8 : 5;
     reasons.push("地点价格待确认");
   }
   if (place.openTimeToday) { score += 3; reasons.push("今日营业时间可查询"); }
@@ -277,8 +338,8 @@ function scoreCandidate(place: Pick<AmapPlace, "name" | "address" | "businessAre
   return { score, reasons: reasons.slice(0, 4), budgetEligible: true };
 }
 
-function budgetMaximum(budget: string) {
-  return budget === "¥100以内" ? 100 : budget === "¥100–300" ? 300 : Infinity;
+function budgetBand(budget: string): BudgetBand {
+  return budget === "¥100以内" ? { min: 0, max: 100 } : budget === "¥100–300" ? { min: 100, max: 300 } : { min: 300, max: Infinity };
 }
 
 function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> {
@@ -299,30 +360,87 @@ function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> 
   };
 }
 
-function validatePlan(plan: GeneratedPlan, candidates: AmapPlace[], usedPlaceIds: Set<string>, planIndex: number, requestedBudget: string): GeneratedPlan {
+function validatePlan(plan: GeneratedPlan, candidates: AmapPlace[], usedPlaceIds: Set<string>, planIndex: number, input: Required<InspirationRequest>): GeneratedPlan {
   if (!plan || typeof plan.title !== "string" || typeof plan.summary !== "string" || !Array.isArray(plan.timeline)) throw new Error("Invalid generated plan");
-  const timeline = plan.timeline.slice(0, 3).map(item => ({ time: clean(item.time, 10), title: clean(item.title, 50), description: clean(item.description, 120) }));
-  while (timeline.length < 3) {
-    timeline.push({ time: "结束前", title: "从容返程", description: "根据当晚状态决定结束时间，并在出发前查看实时路线" });
+  const aiTimeline = plan.timeline.slice(0, 3).map(item => ({ time: clean(item.time, 10), title: clean(item.title, 50), description: clean(item.description, 120) }));
+  if (!candidates.length) {
+    while (aiTimeline.length < 3) aiTimeline.push({ time: "结束前", title: "从容返程", description: "根据实时路线和当晚状态决定结束时间" });
+    return { title: clean(plan.title, 50), summary: clean(plan.summary, 180), duration: clean(plan.duration, 30), budgetLabel: input.budget, placeQuery: clean(plan.placeQuery, 80), timeline: aiTimeline, places: [], includedPlaces: [], estimatedCost: null, budgetMatch: "unknown", searchRadius: input.radius, distanceVerified: false };
   }
   const requestedIndex = /^P(\d{1,2})$/i.exec(clean(plan.placeId, 4));
   const requested = requestedIndex ? candidates[Number(requestedIndex[1]) - 1] : undefined;
-  const primary = requested && !usedPlaceIds.has(requested.id) ? requested : candidates.find(place => !usedPlaceIds.has(place.id)) ?? candidates[planIndex] ?? candidates[0];
-  if (primary) {
-    usedPlaceIds.add(primary.id);
-    timeline[2] = { ...timeline[2], title: primary.name, description: `到达${primary.name}；营业时间、价格与路线请在出发前再次确认` };
-  }
-  const alternatives = primary ? candidates.filter(place => place.id !== primary.id).sort((left, right) => Number(right.category === primary.category) - Number(left.category === primary.category) || right.score - left.score).slice(0, 2) : [];
+  const composition = composePlacesForBudget(candidates, input, usedPlaceIds, requested ?? candidates[planIndex]);
+  const primary = composition.primary;
+  usedPlaceIds.add(primary.id);
+  const firstTime = aiTimeline[0]?.time || (input.time === "现在出发" ? "现在" : "18:30");
+  const timeline = composition.included.length > 1 ? [
+    { time: firstTime, title: primary.name, description: `先到${primary.name}；营业时间与价格请在出发前确认` },
+    { time: aiTimeline[1]?.time || "中段", title: "转场", description: "根据实时路线前往下一处，避免安排过满" },
+    { time: aiTimeline[2]?.time || "稍后", title: composition.included[1].name, description: `再到${composition.included[1].name}；两处地点相距不超过约3公里` },
+  ] : [
+    { time: firstTime, title: "从容出发", description: `从${input.district || input.city}出发，先查看实时路线与天气` },
+    { time: aiTimeline[1]?.time || "到达前", title: "再次确认", description: "确认营业时间、价格和现场排队情况" },
+    { time: aiTimeline[2]?.time || "主要活动", title: primary.name, description: `到达${primary.name}，体验${primary.category}活动` },
+  ];
+  const compositionChanged = requested?.id !== primary.id || composition.included.length > 1 || composition.budgetMatch !== "matched";
+  const includedNames = composition.included.map(place => place.name).join("、");
   return {
-    title: clean(plan.title, 50),
-    summary: clean(plan.summary, 180),
+    title: compositionChanged ? clean(`${includedNames}的${input.vibe || "轻松"}时光`, 50) : clean(plan.title, 50),
+    summary: compositionChanged ? clean(`以${includedNames}组成真实地点安排。${budgetMatchSummary(composition)}；营业状态、实时路线与其他支出请在出发前复查。`, 180) : clean(plan.summary, 180),
     duration: clean(plan.duration, 30),
-    budgetLabel: clean(requestedBudget, 30),
+    budgetLabel: clean(input.budget, 30),
     placeQuery: clean(plan.placeQuery, 80),
     placeId: primary?.id,
     timeline,
-    places: primary ? [primary, ...alternatives] : [],
+    places: [primary],
+    includedPlaces: composition.included,
+    estimatedCost: composition.estimatedCost,
+    budgetMatch: composition.budgetMatch,
+    searchRadius: input.radius,
+    distanceVerified: validCoordinates(input.longitude, input.latitude),
   };
+}
+
+function composePlacesForBudget(candidates: AmapPlace[], input: Required<InspirationRequest>, usedPlaceIds: Set<string>, preferred?: AmapPlace): PlaceComposition {
+  const people = input.partnerMood ? 2 : 1;
+  const band = budgetBand(input.budget);
+  const unused = candidates.filter(place => !usedPlaceIds.has(place.id));
+  const ordered = [...unused].sort((left, right) => {
+    if (input.budget === "¥300+") return knownPlaceCost(right, people) - knownPlaceCost(left, people) || right.score - left.score;
+    return right.score - left.score;
+  });
+  if (preferred && input.budget !== "¥300+" && ordered.some(place => place.id === preferred.id)) ordered.unshift(...ordered.splice(ordered.findIndex(place => place.id === preferred.id), 1));
+
+  for (const primary of ordered) {
+    const primaryCost = knownPlaceCost(primary, people);
+    if (primaryCost > 0 && primaryCost >= band.min && primaryCost <= band.max) return { primary, included: [primary], estimatedCost: primaryCost, budgetMatch: "matched" };
+    if (primaryCost <= 0) continue;
+    const companion = ordered.find(place => place.id !== primary.id && brandKey(place.name) !== brandKey(primary.name) && routeDistance(primary, place) <= 3_000 && (() => {
+      const combined = primaryCost + knownPlaceCost(place, people);
+      return knownPlaceCost(place, people) > 0 && combined >= band.min && combined <= band.max;
+    })());
+    if (companion) return { primary, included: [primary, companion], estimatedCost: primaryCost + knownPlaceCost(companion, people), budgetMatch: "matched" };
+  }
+
+  const unknown = ordered.find(place => knownPlaceCost(place, people) === 0);
+  if (unknown) return { primary: unknown, included: [unknown], estimatedCost: null, budgetMatch: "unknown" };
+  const under = ordered[0] ?? candidates[0];
+  if (!under) throw new Error("No place candidate available");
+  return { primary: under, included: [under], estimatedCost: knownPlaceCost(under, people), budgetMatch: "under" };
+}
+
+function budgetMatchSummary(composition: PlaceComposition) {
+  return composition.budgetMatch === "matched" ? `已知地点消费约¥${composition.estimatedCost}` : composition.budgetMatch === "under" ? `已知地点消费约¥${composition.estimatedCost}，未达到预算偏好` : "部分地点价格待确认，暂不能判断预算匹配度";
+}
+
+function knownPlaceCost(place: AmapPlace, people: number) {
+  const cost = Number(place.cost);
+  return Number.isFinite(cost) && cost > 0 ? Math.round(cost * people) : 0;
+}
+
+function routeDistance(left: AmapPlace, right: AmapPlace) {
+  const [longitude, latitude] = left.location.split(",").map(Number);
+  return geographicDistance(longitude, latitude, right.location) ?? Infinity;
 }
 
 async function takeUsageLimit(userId: string, clientIp: string): Promise<"ok" | "minute" | "daily"> {
