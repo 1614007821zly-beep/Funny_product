@@ -9,7 +9,7 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   ]);
 
   assert.ok(api.indexOf("searchAmapCandidates(amapKey, safeInput)") < api.indexOf("generatePlans(aiHubMixKey, safeInput, weather, candidates)"));
-  assert.match(api, /Promise\.all\(categories\.map/);
+  assert.match(api, /Promise\.all\(intents\.map/);
   assert.match(api, /const bestById = new Map/);
   assert.match(api, /right\.score - left\.score/);
   assert.match(api, /districtSource === "manual"/);
@@ -35,7 +35,15 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(api, /routeDistance\(primary, place\) <= 3_000/);
   assert.match(api, /includedPlaces: composition\.included/);
   assert.match(api, /highBudget.*餐厅.*剧院/s);
-  assert.match(api, /page_size", "20"/);
+  assert.match(api, /page_size", "25"/);
+  assert.match(api, /page_num", String\(pageNumber\)/);
+  assert.match(api, /firstPage\.rawCount === 25/);
+  assert.match(api, /candidateSearchIntents/);
+  assert.match(api, /\.slice\(0, 10\)/);
+  assert.match(api, /\.slice\(0, 60\)/);
+  assert.match(api, /count >= 10/);
+  assert.match(api, /LiveHouse/);
+  assert.match(api, /pool: candidateSearch\.pool/);
   assert.match(api, /matchesCategory/);
   assert.match(api, /手机\|电脑\|家电\|汽车/);
   assert.match(api, /compositionChanged/);
@@ -52,5 +60,6 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(page, /已知地点消费约/);
   assert.match(page, /商圈搜索/);
   assert.match(page, /未达到预算偏好/);
+  assert.match(page, /已从高德返回的/);
   assert.doesNotMatch(page, /format\(260\)/);
 });

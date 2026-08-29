@@ -55,6 +55,9 @@ type GeneratedPlan = {
 
 type BudgetBand = { min: number; max: number };
 type PlaceComposition = { primary: AmapPlace; included: AmapPlace[]; estimatedCost: number | null; budgetMatch: "matched" | "unknown" | "under" };
+type SearchIntent = { category: string; keyword: string };
+type CandidatePool = { rawCount: number; candidateCount: number; categories: string[]; pagesFetched: number };
+type CandidateSearchResult = { places: AmapPlace[]; pool: CandidatePool };
 
 const MINUTE_LIMIT = 6;
 const DAILY_LIMIT = 50;
@@ -87,9 +90,10 @@ export async function POST(request: Request) {
   if (limit === "minute") return json({ error: "请求过于频繁，请稍后再试。", code: "RATE_LIMITED" }, 429);
   if (limit === "daily") return json({ error: "今天的 AI 灵感次数已用完，请明天再试。", code: "DAILY_LIMITED" }, 429);
   const weather = amapKey ? await fetchAmapWeather(amapKey, safeInput.city).catch(() => null) : null;
-  const candidates = amapKey ? await searchAmapCandidates(amapKey, safeInput).catch(() => []) : [];
+  const candidateSearch = amapKey ? await searchAmapCandidates(amapKey, safeInput).catch(() => emptyCandidateSearch()) : emptyCandidateSearch();
+  const candidates = candidateSearch.places;
   if (!await circuitAllowsRequest()) {
-    if (candidates.length) return candidateFallbackResponse(safeInput, candidates, weather, amapKey);
+    if (candidates.length) return candidateFallbackResponse(safeInput, candidates, candidateSearch.pool, weather, amapKey);
     return json({ error: "AI 服务正在短暂恢复，请几分钟后再试。", code: "AI_CIRCUIT_OPEN" }, 503);
   }
   let plans: GeneratedPlan[];
@@ -99,14 +103,14 @@ export async function POST(request: Request) {
   } catch (error) {
     await recordCircuitFailure().catch(() => undefined);
     console.error("Inspiration generation failed", error instanceof Error ? error.message : "unknown error");
-    if (candidates.length) return candidateFallbackResponse(safeInput, candidates, weather, amapKey);
+    if (candidates.length) return candidateFallbackResponse(safeInput, candidates, candidateSearch.pool, weather, amapKey);
     return json({ error: "灵感暂时没有生成成功，请稍后重试。", code: "GENERATION_FAILED" }, 502);
   }
-  return json({ plans, weather, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
+  return json({ plans, weather, pool: candidateSearch.pool, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
 }
 
-function candidateFallbackResponse(input: Required<InspirationRequest>, candidates: AmapPlace[], weather: AmapWeatherForecast | null, amapKey: string | undefined) {
-  return json({ plans: buildCandidateFallbackPlans(input, candidates), weather, code: "REAL_PLACE_FALLBACK", source: { ai: "规则组合（AI 暂时繁忙）", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
+function candidateFallbackResponse(input: Required<InspirationRequest>, candidates: AmapPlace[], pool: CandidatePool, weather: AmapWeatherForecast | null, amapKey: string | undefined) {
+  return json({ plans: buildCandidateFallbackPlans(input, candidates), weather, pool, code: "REAL_PLACE_FALLBACK", source: { ai: "规则组合（AI 暂时繁忙）", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
 }
 
 function buildCandidateFallbackPlans(input: Required<InspirationRequest>, candidates: AmapPlace[]): GeneratedPlan[] {
@@ -202,16 +206,30 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   return parsed.plans.map((plan, index) => validatePlan(plan, candidates, usedPlaceIds, index, input));
 }
 
-async function searchAmapCandidates(apiKey: string, input: Required<InspirationRequest>): Promise<AmapPlace[]> {
+async function searchAmapCandidates(apiKey: string, input: Required<InspirationRequest>): Promise<CandidateSearchResult> {
   const categories = candidateCategories(input);
-  const batches = await Promise.all(categories.map(category => searchAmapCategory(apiKey, input, category).catch(() => [])));
+  const intents = candidateSearchIntents(categories);
+  const batches = await Promise.all(intents.map(intent => searchAmapCategory(apiKey, input, intent).catch(() => ({ places: [], rawCount: 0, pagesFetched: 0 }))));
   const bestById = new Map<string, AmapPlace>();
-  for (const place of batches.flat()) {
+  for (const place of batches.flatMap(batch => batch.places)) {
     const previous = bestById.get(place.id);
     if (!previous || place.score > previous.score) bestById.set(place.id, place);
   }
   const ranked = [...bestById.values()].sort((left, right) => right.score - left.score || (left.distance ?? Infinity) - (right.distance ?? Infinity));
-  return diversifyCandidates(ranked, input).slice(0, 18);
+  const places = diversifyCandidates(ranked, input).slice(0, 60);
+  return {
+    places,
+    pool: {
+      rawCount: batches.reduce((count, batch) => count + batch.rawCount, 0),
+      candidateCount: places.length,
+      categories,
+      pagesFetched: batches.reduce((count, batch) => count + batch.pagesFetched, 0),
+    },
+  };
+}
+
+function emptyCandidateSearch(): CandidateSearchResult {
+  return { places: [], pool: { rawCount: 0, candidateCount: 0, categories: [], pagesFetched: 0 } };
 }
 
 function diversifyCandidates(candidates: AmapPlace[], input: Required<InspirationRequest>) {
@@ -222,29 +240,43 @@ function diversifyCandidates(candidates: AmapPlace[], input: Required<Inspiratio
     brands.add(key);
     return true;
   });
-  if (input.radius < 10_000 || !validCoordinates(input.longitude, input.latitude)) return uniqueBrands;
+  const categoryCounts = new Map<string, number>();
+  const balanced = uniqueBrands.filter(place => {
+    const count = categoryCounts.get(place.category) ?? 0;
+    if (count >= 10) return false;
+    categoryCounts.set(place.category, count + 1);
+    return true;
+  });
+  if (input.radius < 10_000 || !validCoordinates(input.longitude, input.latitude)) return balanced;
   const bands = [
-    uniqueBrands.filter(place => place.distance !== null && place.distance <= 3_000),
-    uniqueBrands.filter(place => place.distance !== null && place.distance > 3_000 && place.distance <= 6_000),
-    uniqueBrands.filter(place => place.distance !== null && place.distance > 6_000 && place.distance <= input.radius),
+    balanced.filter(place => place.distance !== null && place.distance <= 3_000),
+    balanced.filter(place => place.distance !== null && place.distance > 3_000 && place.distance <= 6_000),
+    balanced.filter(place => place.distance !== null && place.distance > 6_000 && place.distance <= input.radius),
   ];
   const seeded = bands.flatMap(band => band.slice(0, 1));
-  return [...seeded, ...uniqueBrands.filter(place => !seeded.some(seed => seed.id === place.id))];
+  return [...seeded, ...balanced.filter(place => !seeded.some(seed => seed.id === place.id))];
 }
 
 function brandKey(name: string) {
   return name.toLowerCase().replace(/[（(].*$/u, "").replace(/(?:旗舰店|体验店|门店|店)$/u, "").replace(/\s+/g, "").slice(0, 30);
 }
 
-async function searchAmapCategory(apiKey: string, input: Required<InspirationRequest>, category: string): Promise<AmapPlace[]> {
+async function searchAmapCategory(apiKey: string, input: Required<InspirationRequest>, intent: SearchIntent) {
+  const firstPage = await searchAmapPage(apiKey, input, intent, 1);
+  const secondPage = firstPage.rawCount === 25 ? await searchAmapPage(apiKey, input, intent, 2) : { places: [], rawCount: 0 };
+  return { places: [...firstPage.places, ...secondPage.places], rawCount: firstPage.rawCount + secondPage.rawCount, pagesFetched: firstPage.rawCount === 25 ? 2 : 1 };
+}
+
+async function searchAmapPage(apiKey: string, input: Required<InspirationRequest>, intent: SearchIntent, pageNumber: number) {
   const hasCoordinates = validCoordinates(input.longitude, input.latitude);
   const manualDistrict = input.districtSource === "manual" && Boolean(input.district);
   const url = new URL(hasCoordinates && !manualDistrict ? "https://restapi.amap.com/v5/place/around" : "https://restapi.amap.com/v5/place/text");
   url.searchParams.set("key", apiKey);
-  url.searchParams.set("keywords", `${manualDistrict || !hasCoordinates ? input.district ? `${input.district} ` : "" : ""}${category}`.slice(0, 80));
+  url.searchParams.set("keywords", `${manualDistrict || !hasCoordinates ? input.district ? `${input.district} ` : "" : ""}${intent.keyword}`.slice(0, 80));
   url.searchParams.set("region", input.city);
   url.searchParams.set("city_limit", "true");
-  url.searchParams.set("page_size", "20");
+  url.searchParams.set("page_size", "25");
+  url.searchParams.set("page_num", String(pageNumber));
   url.searchParams.set("show_fields", "business");
   if (hasCoordinates && !manualDistrict) {
     url.searchParams.set("location", `${input.longitude.toFixed(6)},${input.latitude.toFixed(6)}`);
@@ -253,10 +285,10 @@ async function searchAmapCategory(apiKey: string, input: Required<InspirationReq
   }
 
   const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
-  if (!response.ok) return [];
+  if (!response.ok) return { places: [], rawCount: 0 };
   const data = await response.json() as { status?: string; pois?: Array<Record<string, unknown>> };
-  if (data.status !== "1" || !Array.isArray(data.pois)) return [];
-  return data.pois.flatMap(poi => parseCandidate(poi, input, category));
+  if (data.status !== "1" || !Array.isArray(data.pois)) return { places: [], rawCount: 0 };
+  return { places: data.pois.flatMap(poi => parseCandidate(poi, input, intent.category)), rawCount: data.pois.length };
 }
 
 function parseCandidate(poi: Record<string, unknown>, input: Required<InspirationRequest>, category: string): AmapPlace[] {
@@ -303,7 +335,22 @@ function candidateCategories(input: Required<InspirationRequest>) {
     : input.vibe === "热闹" ? ["夜市", "商场", "电影院", "剧院", "餐厅", "酒吧"]
     : ["咖啡馆", "公园", "书店", "商场", "餐厅", "电影院"];
   if (input.budget === "¥100以内") values.unshift("公园", "书店", "博物馆");
-  return [...new Set(values)].slice(0, 5);
+  return [...new Set(values)].slice(0, 8);
+}
+
+function candidateSearchIntents(categories: string[]): SearchIntent[] {
+  const keywordVariants: Record<string, string[]> = {
+    餐厅: ["餐厅", "特色餐厅"], 咖啡馆: ["咖啡馆", "咖啡店"], 书店: ["书店", "独立书店"],
+    公园: ["公园", "城市公园"], 景区: ["景区", "文化景点"], 户外休闲: ["绿道", "滨水空间"],
+    美术馆: ["美术馆", "艺术中心"], 博物馆: ["博物馆", "展览馆"], 商场: ["商场", "购物中心"],
+    电影院: ["电影院", "影城"], 剧院: ["剧院", "剧场"], 现场演出: ["音乐现场", "LiveHouse"],
+    手作体验: ["手作", "DIY"], 陶艺馆: ["陶艺", "陶艺体验"], 夜市: ["夜市", "美食街"],
+    演出: ["演出", "演艺中心"], 酒吧: ["酒吧", "清吧"], 游船: ["游船", "码头"],
+    主题乐园: ["主题乐园", "游乐园"], 露营地: ["露营地", "露营营地"],
+  };
+  const primary = categories.map(category => ({ category, keyword: keywordVariants[category]?.[0] ?? category }));
+  const secondary = categories.flatMap(category => keywordVariants[category]?.[1] ? [{ category, keyword: keywordVariants[category][1] }] : []);
+  return [...primary, ...secondary].slice(0, 10);
 }
 
 function scoreCandidate(place: Pick<AmapPlace, "name" | "address" | "businessArea" | "distance" | "rating" | "cost" | "openTimeToday" | "category">, input: Required<InspirationRequest>) {

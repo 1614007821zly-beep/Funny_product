@@ -23,6 +23,7 @@ type WeatherDay = { date: string; dayWeather: string; nightWeather: string; dayT
 type WeatherForecast = { queryCity: string; city: string; province: string; adcode: string; reportTime: string; fetchedAt: string; forecasts: WeatherDay[] };
 type LocationPreferences = { city: string; district: string; districtSource: "none" | "auto" | "manual"; radius: number; longitude: number | null; latitude: number | null; label: string };
 type ResolvedLocation = { city: string; district: string; businessArea: string; displayName: string; longitude: number; latitude: number };
+type CandidatePool = { rawCount: number; candidateCount: number; categories: string[]; pagesFetched: number };
 
 const LEGACY_STORAGE_KEYS = ["love-diary-v112", "love-diary-v17", "love-diary-v16", "love-diary-v15", "love-diary-v14"];
 const INSPIRATION_DRAFT_KEY = "love-diary-inspiration-draft-v1";
@@ -136,6 +137,7 @@ export default function Home() {
   const [aiPlans, setAiPlans] = useState<Plan[] | null>(null);
   const [generationError, setGenerationError] = useState("");
   const [weather, setWeather] = useState<WeatherForecast | null>(null);
+  const [candidatePool, setCandidatePool] = useState<CandidatePool | null>(null);
   const requestController = useRef<AbortController | null>(null);
   const dynamicPlans = useMemo(() => (aiPlans ?? plans).map((plan, index) => ({
     ...plan,
@@ -547,7 +549,7 @@ export default function Home() {
     if (shouldFail) { setGenerationError("这是手动触发的失败状态预览。"); setLoadingFailed(true); go("loading"); return; }
     const controller = new AbortController();
     requestController.current = controller;
-    setGenerationError(""); setLoadingFailed(false); go("loading");
+    setGenerationError(""); setLoadingFailed(false); setCandidatePool(null); go("loading");
     try {
       const response = await fetch("/api/inspiration", {
         method: "POST",
@@ -555,7 +557,7 @@ export default function Home() {
         body: JSON.stringify({ city: inspirationCity, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: locationPrefs.district, districtSource: locationPrefs.districtSource, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude }),
         signal: controller.signal,
       });
-      const data = await response.json() as { plans?: Array<{ title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean }>; weather?: WeatherForecast | null; error?: string; code?: string };
+      const data = await response.json() as { plans?: Array<{ title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean }>; weather?: WeatherForecast | null; pool?: CandidatePool; error?: string; code?: string };
       if (["AI_NOT_CONFIGURED", "GENERATION_FAILED", "AI_CIRCUIT_OPEN"].includes(data.code ?? "")) {
         setAiPlans(null); setSelectedPlan(0); setHasGenerated(true); go("results");
         notify(data.code === "AI_NOT_CONFIGURED" ? "AI 尚未配置，当前显示备用方案" : "AI 服务暂时繁忙，已切换为可继续编辑的备用方案");
@@ -563,6 +565,7 @@ export default function Home() {
       }
       if (!response.ok || !data.plans) throw new Error(data.error || "灵感暂时没有生成成功。");
       if (data.weather) setWeather(data.weather);
+      setCandidatePool(data.pool ?? null);
       setAiPlans(data.plans.map((plan, index) => ({ eyebrow: index === 0 ? `主方案 · ${data.code === "REAL_PLACE_FALLBACK" ? "真实地点推荐" : "AI 实时生成"}` : `备选 · ${data.code === "REAL_PLACE_FALLBACK" ? "真实地点推荐" : "AI 实时生成"}`, title: plan.title, meta: `${choices.time} · 预算偏好 ${choices.budget}`, desc: plan.summary, tone: ["primary", "cream", "lilac"][index] ?? "cream", duration: plan.duration, timeline: plan.timeline, places: plan.places, includedPlaces: plan.includedPlaces, estimatedCost: plan.estimatedCost, budgetMatch: plan.budgetMatch, searchRadius: plan.searchRadius, distanceVerified: plan.distanceVerified })));
       setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); setHasGenerated(true); go("results");
       if (data.code === "REAL_PLACE_FALLBACK") notify("AI 暂时繁忙，已根据真实地点生成可执行方案");
@@ -1018,7 +1021,7 @@ export default function Home() {
             {screen === "results" && (
               <div className="page result-page">
                 <header><Back onClick={() => back("inspire")}/><span>{hasRelationship?"为你们想到的":"为你想到的"}</span><button className="text-button" onClick={() => go("inspire")}>调整条件</button></header>
-                <div className="result-intro"><p className="kicker">{inspirationCity} · {choices.time} · {choices.mood} · {locationPrefs.longitude===null?"商圈搜索 · 距离待定位":`搜索范围 ${locationPrefs.radius/1000} km`}</p><h2>{choices.space === "室内" ? <>留在室内，<br/>也能认真约会。</> : <>不赶时间，<br/>也不辜负今晚。</>}</h2>{inspirationWeather&&<p className="weather-summary">高德天气 · {inspirationWeather.date} · {weatherLabel(inspirationWeather)}</p>}</div>
+                <div className="result-intro"><p className="kicker">{inspirationCity} · {choices.time} · {choices.mood} · {locationPrefs.longitude===null?"商圈搜索 · 距离待定位":`搜索范围 ${locationPrefs.radius/1000} km`}</p><h2>{choices.space === "室内" ? <>留在室内，<br/>也能认真约会。</> : <>不赶时间，<br/>也不辜负今晚。</>}</h2>{inspirationWeather&&<p className="weather-summary">高德天气 · {inspirationWeather.date} · {weatherLabel(inspirationWeather)}</p>}{candidatePool&&candidatePool.candidateCount>0&&<p className="candidate-pool-summary">已从高德返回的 {candidatePool.rawCount} 条结果中，筛出 {candidatePool.candidateCount} 个符合范围与预算的候选地点</p>}</div>
                 <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => setSelectedPlan(0)}><div className="plan-top"><span>主灵感 · {aiPlans ? "真实地点组合" : "演示方案"}</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · 预算偏好 {choices.budget} · {choices.space}</p><p>{dynamicPlans[0].desc}</p>{dynamicPlans[0].places?.[0]&&<span className="place-preview"><b>真实地点</b>{dynamicPlans[0].includedPlaces?.map(place=>place.name).join(" + ")||dynamicPlans[0].places[0].name} · {placeDistance(dynamicPlans[0].places[0])}</span>}<span className="plan-cost">{planBudgetText(dynamicPlans[0],choices.budget,hasRelationship)} · {planDistanceText(dynamicPlans[0],locationPrefs.radius)}</span>{choices.special.trim()&&<span className="prep-note">特别照顾：{choices.special.trim()}</span>}</button><div className="alternative-title"><b>也可以试试</b><button onClick={() => {setSelectedPlan((selectedPlan+1)%3);notify("已将下一方案设为主方案");}}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => setSelectedPlan(i)}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p>{plan.places?.[0]&&<p className="alternative-place">{plan.includedPlaces?.map(place=>place.name).join(" + ")||plan.places[0].name} · {placeDistance(plan.places[0])}</p>}<small className="alternative-cost">{planBudgetText(plan,choices.budget,hasRelationship)}</small></div><i aria-hidden="true">›</i></button>})}</div>
                 <div className="sticky-cta"><button className="primary-button" onClick={() => go("plan")}>查看详细计划 <Arrow /></button></div>
               </div>
