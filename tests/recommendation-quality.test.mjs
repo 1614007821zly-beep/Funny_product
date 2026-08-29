@@ -61,5 +61,8 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(page, /商圈搜索/);
   assert.match(page, /未达到预算偏好/);
   assert.match(page, /已从高德返回的/);
+  assert.match(page, /灵感是怎么生成的/);
+  assert.match(page, /这里只提供建议，确认前不会进入日历/);
+  assert.match(page, /共同安排仍需双方分别确认/);
   assert.doesNotMatch(page, /format\(260\)/);
 });
