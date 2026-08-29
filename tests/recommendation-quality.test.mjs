@@ -40,9 +40,13 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(api, /firstPage\.rawCount === 25/);
   assert.match(api, /candidateSearchIntents/);
   assert.match(api, /\.slice\(0, 10\)/);
+  assert.match(api, /\.slice\(0, 14\)/);
   assert.match(api, /\.slice\(0, 60\)/);
   assert.match(api, /count >= 10/);
   assert.match(api, /LiveHouse/);
+  assert.match(api, /沉浸式体验.*香水手作.*银饰工坊.*玻璃工坊.*马术.*室内滑雪.*攀岩/s);
+  assert.match(api, /优先新奇体验类活动/);
+  assert.match(api, /usedCategories/);
   assert.match(api, /pool: candidateSearch\.pool/);
   assert.match(api, /matchesCategory/);
   assert.match(api, /手机\|电脑\|家电\|汽车/);
@@ -61,8 +65,9 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(page, /商圈搜索/);
   assert.match(page, /未达到预算偏好/);
   assert.match(page, /已从高德返回的/);
-  assert.match(page, /灵感是怎么生成的/);
-  assert.match(page, /这里只提供建议，确认前不会进入日历/);
+  assert.doesNotMatch(page, /先看简短说明，需要时再展开/);
+  assert.match(page, /方案简介/);
+  assert.match(page, /完整方案介绍/);
   assert.match(page, /共同安排仍需双方分别确认/);
   assert.doesNotMatch(page, /format\(260\)/);
 });
