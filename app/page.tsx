@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { calendarDayStatus, holidaySource } from "../lib/china-holidays";
+import { emptyRecommendationFeedback, recommendationBrandKey, recommendationPlaces, recommendationDistance, planIdentity, selectUnseenPlans, type RecommendationFeedback } from "../lib/recommendation-feedback";
 
 type Screen = "welcome" | "age" | "profileSetup" | "connect" | "relationshipReady" | "contentReview" | "home" | "inspire" | "loading" | "results" | "plan" | "location" | "confirm" | "schedule" | "calendar" | "memory" | "memories" | "memoryCreate" | "task" | "taskHistory" | "profile" | "settings" | "notifications" | "privacy" | "storage" | "help" | "about" | "relationshipSafety" | "relationshipArchive" | "important" | "importantCreate";
 type Tab = "home" | "inspire" | "calendar" | "settings";
@@ -26,7 +27,6 @@ type ResolvedLocation = { city: string; district: string; businessArea: string; 
 type CandidatePool = { rawCount: number; candidateCount: number; categories: string[]; pagesFetched: number };
 type GeneratedPlanResponse = { title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean };
 type FeedbackReason = "太远" | "太贵" | "太普通" | "不符合状态" | "地点不合适";
-type RecommendationFeedback = { placeIds: string[]; brands: string[]; categories: string[]; maxDistance: number | null; maxCost: number | null };
 
 const LEGACY_STORAGE_KEYS = ["love-diary-v112", "love-diary-v17", "love-diary-v16", "love-diary-v15", "love-diary-v14"];
 const INSPIRATION_DRAFT_KEY = "love-diary-inspiration-draft-v1";
@@ -43,20 +43,6 @@ const popularCities = ["北京", "上海", "广州", "深圳", "杭州", "成都
 const cityOptions = [
   ...popularCities, "天津", "郑州", "青岛", "宁波", "厦门", "福州", "济南", "合肥", "昆明", "大连", "沈阳", "哈尔滨", "长春", "石家庄", "太原", "南昌", "南宁", "贵阳", "海口", "三亚", "兰州", "西宁", "银川", "乌鲁木齐", "拉萨", "呼和浩特", "珠海", "佛山", "东莞", "无锡", "常州", "温州", "绍兴", "嘉兴", "金华", "台州", "泉州", "烟台", "潍坊", "徐州", "扬州", "镇江", "南通", "洛阳", "开封", "宜昌", "襄阳", "株洲", "桂林", "柳州", "大理", "丽江", "绵阳", "乐山", "秦皇岛", "唐山", "保定", "包头", "威海", "中山", "惠州", "汕头", "湛江", "香港", "澳门", "台北",
 ];
-const emptyRecommendationFeedback = (): RecommendationFeedback => ({ placeIds: [], brands: [], categories: [], maxDistance: null, maxCost: null });
-const recommendationBrandKey = (name: string) => name.toLowerCase().replace(/[（(].*$/u, "").replace(/(?:旗舰店|体验店|门店|店)$/u, "").replace(/\s+/g, "").slice(0, 30);
-const planIdentity = (plan: Plan) => plan.includedPlaces?.map(place => place.id).join("|") || plan.places?.[0]?.id || plan.title;
-
-function planAllowedByFeedback(plan: Plan, feedback: RecommendationFeedback) {
-  const places = plan.includedPlaces?.length ? plan.includedPlaces : plan.places ?? [];
-  if (places.some(place => feedback.placeIds.includes(place.id) || feedback.brands.includes(recommendationBrandKey(place.name)))) return false;
-  if (places.some(place => feedback.categories.includes(place.category))) return false;
-  const distance = plan.places?.[0]?.distance;
-  if (feedback.maxDistance !== null && (distance === null || distance === undefined || distance >= feedback.maxDistance)) return false;
-  if (feedback.maxCost !== null && (plan.estimatedCost === null || plan.estimatedCost === undefined || plan.estimatedCost >= feedback.maxCost)) return false;
-  return true;
-}
-
 function toPlan(plan: GeneratedPlanResponse, index: number, time: string, budget: string, fallback: boolean): Plan {
   return {
     eyebrow: index === 0 ? `主方案 · ${fallback ? "真实地点推荐" : "AI 实时生成"}` : `备选 · ${fallback ? "真实地点推荐" : "AI 实时生成"}`,
@@ -176,12 +162,13 @@ export default function Home() {
   const [weather, setWeather] = useState<WeatherForecast | null>(null);
   const [candidatePool, setCandidatePool] = useState<CandidatePool | null>(null);
   const requestController = useRef<AbortController | null>(null);
+  const generationRefresh = useRef(false);
   const dynamicPlans = useMemo(() => (aiPlans ?? plans).map((plan, index) => ({
     ...plan,
     title: aiPlans ? plan.title : choices.space === "室内" ? ["独立书店与安静晚餐", "双人陶艺与甜品", "小剧场与夜宵"][index] : choices.mood === "想热闹" ? ["夜市寻味与现场音乐", "双人保龄球与夜宵", "城市夜游与甜品"][index] : plan.title,
     meta: `${choices.time} · 预算偏好 ${choices.budget}`,
   })), [aiPlans, choices]);
-  const eligibleMorePlans = useMemo(() => morePlans.filter(plan => planAllowedByFeedback(plan, recommendationFeedback)), [morePlans, recommendationFeedback]);
+  const eligibleMorePlans = useMemo(() => selectUnseenPlans(morePlans, recommendationFeedback, seenPlaceIds), [morePlans, recommendationFeedback, seenPlaceIds]);
   const currentPlan = dynamicPlans[selectedPlan];
   const hasRelationship = Boolean(account?.relationship?.partner_id);
   const inspirationCity = locationPrefs.city || profile.city;
@@ -584,6 +571,7 @@ export default function Home() {
   }
   async function generate(shouldFail = false, refreshPool = false, feedbackOverride = recommendationFeedback) {
     requestController.current?.abort();
+    generationRefresh.current = refreshPool;
     if (shouldFail) { setGenerationError("这是手动触发的失败状态预览。"); setLoadingFailed(true); go("loading"); return; }
     const controller = new AbortController();
     requestController.current = controller;
@@ -594,11 +582,13 @@ export default function Home() {
       const response = await fetch("/api/inspiration", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ city: inspirationCity, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: locationPrefs.district, districtSource: locationPrefs.districtSource, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude, excludePlaceIds: refreshPool ? [...new Set([...seenPlaceIds, ...activeFeedback.placeIds])] : [], excludeCategories: refreshPool ? activeFeedback.categories : [] }),
+        body: JSON.stringify({ city: inspirationCity, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: locationPrefs.district, districtSource: locationPrefs.districtSource, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude, excludePlaceIds: refreshPool ? [...new Set([...seenPlaceIds, ...activeFeedback.placeIds])].slice(-60) : [], excludeCategories: refreshPool ? activeFeedback.categories : [], excludeBrands: refreshPool ? activeFeedback.brands.slice(-60) : [], maxDistance: activeFeedback.maxDistance, maxCost: activeFeedback.maxCost }),
         signal: controller.signal,
       });
       const data = await response.json() as { plans?: GeneratedPlanResponse[]; morePlans?: GeneratedPlanResponse[]; weather?: WeatherForecast | null; pool?: CandidatePool; error?: string; code?: string };
+      if (controller.signal.aborted) return;
       if (["AI_NOT_CONFIGURED", "GENERATION_FAILED", "AI_CIRCUIT_OPEN"].includes(data.code ?? "")) {
+        if (refreshPool) throw new Error("暂时无法补充新方案，已保留你的反馈。可稍后重试或返回修改条件。");
         setAiPlans(null); setMorePlans([]); setSelectedPlan(0); setHasGenerated(true); go("results");
         notify(data.code === "AI_NOT_CONFIGURED" ? "AI 尚未配置，当前显示备用方案" : "AI 服务暂时繁忙，已切换为可继续编辑的备用方案");
         return;
@@ -607,10 +597,13 @@ export default function Home() {
       if (data.weather) setWeather(data.weather);
       setCandidatePool(data.pool ?? null);
       const fallback = data.code === "REAL_PLACE_FALLBACK";
-      const displayedPlans = data.plans.map((plan, index) => toPlan(plan, index, choices.time, choices.budget, fallback));
+      const freshPlans = [...data.plans.map((plan, index) => toPlan(plan, index, choices.time, choices.budget, fallback)), ...(data.morePlans ?? []).map((plan, index) => toPlan(plan, index + 3, choices.time, choices.budget, true))];
+      const eligible = selectUnseenPlans([...(refreshPool ? morePlans : []), ...freshPlans], activeFeedback, refreshPool ? seenPlaceIds : []);
+      if (!eligible.length) throw new Error("没有更多符合当前条件与反馈的新方案。可返回修改条件，或稍后再试。");
+      const displayedPlans = eligible.slice(0, 3);
       setAiPlans(displayedPlans);
-      setMorePlans((data.morePlans ?? []).map((plan, index) => toPlan(plan, index + 3, choices.time, choices.budget, true)));
-      const displayedPlaceIds = displayedPlans.flatMap(plan => (plan.includedPlaces?.length ? plan.includedPlaces : plan.places ?? []).map(place => place.id));
+      setMorePlans(eligible.slice(3));
+      const displayedPlaceIds = displayedPlans.flatMap(plan => recommendationPlaces(plan).map(place => place.id));
       setSeenPlaceIds(current => [...new Set([...(refreshPool ? current : []), ...displayedPlaceIds])]);
       setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); setHasGenerated(true); go("results");
       if (data.code === "REAL_PLACE_FALLBACK") notify("AI 暂时繁忙，已根据真实地点生成可执行方案");
@@ -623,13 +616,13 @@ export default function Home() {
     }
   }
   function replaceSelectedPlan(feedback = recommendationFeedback, notice = "已换成一个未看过的方案") {
-    const next = morePlans.find(plan => planAllowedByFeedback(plan, feedback));
+    const next = selectUnseenPlans(morePlans, feedback, seenPlaceIds)[0];
     if (!next) { notify("本批候选已看完，正在寻找新的地点"); void generate(false, true, feedback); return; }
     const identity = planIdentity(next);
     setMorePlans(current => current.filter(plan => planIdentity(plan) !== identity));
     setAiPlans(current => current?.map((plan, index) => index === selectedPlan ? next : plan) ?? current);
     setSelectedPlaceIndexes(current => current.map((value, index) => index === selectedPlan ? 0 : value));
-    setSeenPlaceIds(current => [...new Set([...current, ...(next.includedPlaces?.length ? next.includedPlaces : next.places ?? []).map(place => place.id)])]);
+    setSeenPlaceIds(current => [...new Set([...current, ...recommendationPlaces(next).map(place => place.id)])]);
     notify(notice);
   }
   function replacePlanBatch() {
@@ -638,17 +631,18 @@ export default function Home() {
     const identities = new Set(batch.map(planIdentity));
     setAiPlans(batch);
     setMorePlans(current => current.filter(plan => !identities.has(planIdentity(plan))));
-    setSeenPlaceIds(current => [...new Set([...current, ...batch.flatMap(plan => (plan.includedPlaces?.length ? plan.includedPlaces : plan.places ?? []).map(place => place.id))])]);
+    setSeenPlaceIds(current => [...new Set([...current, ...batch.flatMap(plan => recommendationPlaces(plan).map(place => place.id))])]);
     setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); notify("已换成 3 个未看过的方案");
   }
   function dislikeCurrentPlan(reason: FeedbackReason) {
-    const places = currentPlan.includedPlaces?.length ? currentPlan.includedPlaces : currentPlan.places ?? [];
+    const places = recommendationPlaces(currentPlan);
     const primary = currentPlan.places?.[0];
+    const distance = recommendationDistance(currentPlan);
     const nextFeedback: RecommendationFeedback = {
       placeIds: [...new Set([...recommendationFeedback.placeIds, ...places.map(place => place.id)])],
       brands: [...new Set([...recommendationFeedback.brands, ...places.map(place => recommendationBrandKey(place.name))])],
       categories: ["太普通", "不符合状态"].includes(reason) && primary?.category ? [...new Set([...recommendationFeedback.categories, primary.category])] : recommendationFeedback.categories,
-      maxDistance: reason === "太远" && primary?.distance !== null && primary?.distance !== undefined ? Math.min(recommendationFeedback.maxDistance ?? Infinity, Math.max(0, primary.distance)) : recommendationFeedback.maxDistance,
+      maxDistance: reason === "太远" && distance !== null ? Math.min(recommendationFeedback.maxDistance ?? Infinity, distance) : recommendationFeedback.maxDistance,
       maxCost: reason === "太贵" && currentPlan.estimatedCost !== null && currentPlan.estimatedCost !== undefined ? Math.min(recommendationFeedback.maxCost ?? Infinity, Math.max(0, currentPlan.estimatedCost)) : recommendationFeedback.maxCost,
     };
     setRecommendationFeedback(nextFeedback);
@@ -1092,7 +1086,7 @@ export default function Home() {
             )}
 
             {screen === "loading" && (
-              <div className="page loading-page"><header><Back onClick={() => back("inspire")}/><span>正在寻找灵感</span><i aria-hidden="true"/></header>{loadingFailed ? <div className="error-state"><div className="state-symbol" aria-hidden="true">↻</div><p className="kicker">暂时走神了</p><h2>灵感没有生成成功</h2><p>{generationError || "网络有一点拥挤，你刚才选择的条件都还在，不需要重新填写。"}</p><button className="primary-button" onClick={() => generate(false)}>再试一次 <Arrow/></button><button className="ghost-button" onClick={() => go("inspire")}>返回修改条件</button></div> : <div className="ai-loading" role="status" aria-live="polite"><div className="loading-orbit" aria-hidden="true"><span>✦</span></div><p className="kicker">{hasRelationship?"读懂你们此刻的心情":"读懂你此刻的心情"}</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配{hasRelationship?"你们":"你的"}状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>通常只需要几秒钟</p></div>}</div>
+              <div className="page loading-page"><header><Back onClick={() => back("inspire")}/><span>正在寻找灵感</span><i aria-hidden="true"/></header>{loadingFailed ? <div className="error-state"><div className="state-symbol" aria-hidden="true">↻</div><p className="kicker">暂时走神了</p><h2>灵感没有生成成功</h2><p>{generationError || "网络有一点拥挤，你刚才选择的条件都还在，不需要重新填写。"}</p><button className="primary-button" onClick={() => generate(false, generationRefresh.current)}>再试一次 <Arrow/></button><button className="ghost-button" onClick={() => go("inspire")}>返回修改条件</button></div> : <div className="ai-loading" role="status" aria-live="polite"><div className="loading-orbit" aria-hidden="true"><span>✦</span></div><p className="kicker">{hasRelationship?"读懂你们此刻的心情":"读懂你此刻的心情"}</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配{hasRelationship?"你们":"你的"}状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>通常只需要几秒钟</p></div>}</div>
             )}
 
             {screen === "results" && (

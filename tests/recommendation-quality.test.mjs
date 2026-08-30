@@ -77,7 +77,7 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(page, /换一批/);
   assert.match(page, /replaceSelectedPlan/);
   assert.match(page, /太远.*太贵.*太普通.*不符合状态.*地点不合适/s);
-  assert.match(page, /planAllowedByFeedback/);
+  assert.match(page, /selectUnseenPlans/);
   assert.match(page, /本次浏览不再推荐相同地点或品牌/);
   assert.doesNotMatch(page, /format\(260\)/);
 });

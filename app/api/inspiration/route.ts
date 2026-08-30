@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { fetchAmapWeather, type AmapWeatherForecast, weatherPrompt } from "../../../lib/amap-weather";
 import { getChatGPTUser } from "../../chatgpt-auth";
+import { planAllowedByFeedback, selectUnseenPlans, recommendationBrandKey, type RecommendationFeedback } from "../../../lib/recommendation-feedback";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,9 @@ type InspirationRequest = {
   latitude?: number;
   excludePlaceIds?: string[];
   excludeCategories?: string[];
+  excludeBrands?: string[];
+  maxDistance?: number | null;
+  maxCost?: number | null;
 };
 
 type AmapPlace = {
@@ -94,6 +98,10 @@ export async function POST(request: Request) {
   const weather = amapKey ? await fetchAmapWeather(amapKey, safeInput.city).catch(() => null) : null;
   const candidateSearch = amapKey ? await searchAmapCandidates(amapKey, safeInput).catch(() => emptyCandidateSearch()) : emptyCandidateSearch();
   const candidates = candidateSearch.places;
+  const feedback = requestFeedback(safeInput);
+  if (!candidates.length && (feedback.placeIds.length || feedback.brands.length || feedback.categories.length || feedback.maxDistance !== null || feedback.maxCost !== null)) {
+    return json({ plans: [], morePlans: [], weather, pool: candidateSearch.pool, code: "NO_MATCHING_PLACES" });
+  }
   if (!await circuitAllowsRequest()) {
     if (candidates.length) return candidateFallbackResponse(safeInput, candidates, candidateSearch.pool, weather, amapKey);
     return json({ error: "AI 服务正在短暂恢复，请几分钟后再试。", code: "AI_CIRCUIT_OPEN" }, 503);
@@ -108,13 +116,14 @@ export async function POST(request: Request) {
     if (candidates.length) return candidateFallbackResponse(safeInput, candidates, candidateSearch.pool, weather, amapKey);
     return json({ error: "灵感暂时没有生成成功，请稍后重试。", code: "GENERATION_FAILED" }, 502);
   }
+  plans = selectUnseenPlans(plans, feedback, safeInput.excludePlaceIds);
   const usedPlaceIds = new Set(plans.flatMap(plan => (plan.includedPlaces ?? plan.places ?? []).map(place => place.id)));
-  const morePlans = buildCandidateFallbackPlans(safeInput, candidates, 9, usedPlaceIds);
+  const morePlans = candidates.length ? selectUnseenPlans(buildCandidateFallbackPlans(safeInput, candidates, 9, usedPlaceIds), feedback, [...usedPlaceIds, ...safeInput.excludePlaceIds]) : [];
   return json({ plans, morePlans, weather, pool: candidateSearch.pool, source: { ai: "AIHubMix / lfm-2.5-2.6b-free", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
 }
 
 function candidateFallbackResponse(input: Required<InspirationRequest>, candidates: AmapPlace[], pool: CandidatePool, weather: AmapWeatherForecast | null, amapKey: string | undefined) {
-  const planPool = buildCandidateFallbackPlans(input, candidates, 12);
+  const planPool = selectUnseenPlans(buildCandidateFallbackPlans(input, candidates, 12), requestFeedback(input), input.excludePlaceIds);
   return json({ plans: planPool.slice(0, 3), morePlans: planPool.slice(3), weather, pool, code: "REAL_PLACE_FALLBACK", source: { ai: "规则组合（AI 暂时繁忙）", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
 }
 
@@ -156,6 +165,10 @@ function buildCandidateFallbackPlans(input: Required<InspirationRequest>, candid
   return planPool;
 }
 
+function requestFeedback(input: Required<InspirationRequest>): RecommendationFeedback {
+  return { placeIds: input.excludePlaceIds, brands: input.excludeBrands, categories: input.excludeCategories, maxDistance: input.maxDistance, maxCost: input.maxCost };
+}
+
 async function generatePlans(apiKey: string, input: Required<InspirationRequest>, weather: AmapWeatherForecast | null, candidates: AmapPlace[]): Promise<GeneratedPlan[]> {
   const candidateLines = candidates.slice(0, 12).map((place, index) => {
     const facts = [place.category, place.businessArea, place.distance === null ? "" : `距离${Math.round(place.distance)}米`, place.rating ? `评分${place.rating}` : "", place.cost ? `参考人均${place.cost}元` : ""].filter(Boolean).join("｜");
@@ -178,6 +191,8 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   ];
   if (input.partnerMood) promptLines.splice(7, 0, `TA状态：${input.partnerMood}`);
   if (input.special) promptLines.push(`需要特别照顾：${input.special}`);
+  if (input.maxCost !== null) promptLines.push(`本次浏览反馈：用户觉得之前的方案太贵，已知地点消费合计必须低于${input.maxCost}元。`);
+  if (input.maxDistance !== null) promptLines.push(`本次浏览反馈：用户希望更近，每个地点距离出发点都必须小于${input.maxDistance}米。`);
   promptLines.push("预算是目标区间而不是页面装饰：¥100以内为0–100元，¥100–300为100–300元，¥300+为至少300元。不得建议超过有限预算的消费；地点价格未知时必须明确写“价格待确认”，不得声称符合预算；不得编造精确总价。最终地点组合与费用由服务端校验。");
   if (candidateLines.length) promptLines.push(`真实地点候选（只能从中选择）：\n${candidateLines.join("\n")}`);
   if (weather) {
@@ -222,8 +237,8 @@ async function searchAmapCandidates(apiKey: string, input: Required<InspirationR
     const previous = bestById.get(place.id);
     if (!previous || place.score > previous.score) bestById.set(place.id, place);
   }
-  const excludedPlaceIds = new Set(input.excludePlaceIds);
-  const ranked = [...bestById.values()].filter(place => !excludedPlaceIds.has(place.id)).sort((left, right) => right.score - left.score || (left.distance ?? Infinity) - (right.distance ?? Infinity));
+  const feedback = requestFeedback(input);
+  const ranked = [...bestById.values()].filter(place => planAllowedByFeedback({ places: [place], estimatedCost: knownPlaceCost(place, input.partnerMood ? 2 : 1) || null }, feedback)).sort((left, right) => right.score - left.score || (left.distance ?? Infinity) - (right.distance ?? Infinity));
   const places = diversifyCandidates(ranked, input).slice(0, 60);
   return {
     places,
@@ -266,7 +281,7 @@ function diversifyCandidates(candidates: AmapPlace[], input: Required<Inspiratio
 }
 
 function brandKey(name: string) {
-  return name.toLowerCase().replace(/[（(].*$/u, "").replace(/(?:旗舰店|体验店|门店|店)$/u, "").replace(/\s+/g, "").slice(0, 30);
+  return recommendationBrandKey(name);
 }
 
 async function searchAmapCategory(apiKey: string, input: Required<InspirationRequest>, intent: SearchIntent) {
@@ -430,8 +445,11 @@ function sanitizeInput(input: InspirationRequest): Required<InspirationRequest> 
     radius: clampNumber(input.radius, 1000, 20000, 5000),
     longitude: finiteNumber(input.longitude),
     latitude: finiteNumber(input.latitude),
-    excludePlaceIds: Array.isArray(input.excludePlaceIds) ? input.excludePlaceIds.slice(0, 60).map(value => clean(value, 80)).filter(Boolean) : [],
+    excludePlaceIds: Array.isArray(input.excludePlaceIds) ? input.excludePlaceIds.slice(-60).map(value => clean(value, 80)).filter(Boolean) : [],
     excludeCategories: Array.isArray(input.excludeCategories) ? input.excludeCategories.slice(0, 20).map(value => clean(value, 30)).filter(Boolean) : [],
+    excludeBrands: Array.isArray(input.excludeBrands) ? input.excludeBrands.slice(-60).map(value => recommendationBrandKey(clean(value, 80))).filter(Boolean) : [],
+    maxDistance: feedbackLimit(input.maxDistance),
+    maxCost: feedbackLimit(input.maxCost),
   };
 }
 
@@ -491,11 +509,11 @@ function composePlacesForBudget(candidates: AmapPlace[], input: Required<Inspira
 
   for (const primary of ordered) {
     const primaryCost = knownPlaceCost(primary, people);
-    if (primaryCost > 0 && primaryCost >= band.min && primaryCost <= band.max) return { primary, included: [primary], estimatedCost: primaryCost, budgetMatch: "matched" };
+    if (primaryCost > 0 && primaryCost >= band.min && primaryCost <= band.max && (input.maxCost === null || primaryCost < input.maxCost)) return { primary, included: [primary], estimatedCost: primaryCost, budgetMatch: "matched" };
     if (primaryCost <= 0) continue;
     const companion = ordered.find(place => place.id !== primary.id && brandKey(place.name) !== brandKey(primary.name) && routeDistance(primary, place) <= 3_000 && (() => {
       const combined = primaryCost + knownPlaceCost(place, people);
-      return knownPlaceCost(place, people) > 0 && combined >= band.min && combined <= band.max;
+      return knownPlaceCost(place, people) > 0 && combined >= band.min && combined <= band.max && (input.maxCost === null || combined < input.maxCost);
     })());
     if (companion) return { primary, included: [primary, companion], estimatedCost: primaryCost + knownPlaceCost(companion, people), budgetMatch: "matched" };
   }
@@ -599,6 +617,7 @@ async function fetchWithNetworkRetry(input: string | URL, init: RequestInit) {
 function stringValue(value: unknown) { return typeof value === "string" ? value : ""; }
 function objectValue(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function finiteNumber(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
+function feedbackLimit(value: unknown) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null; }
 function clampNumber(value: unknown, min: number, max: number, fallback: number) { const number = finiteNumber(value); return number ? Math.min(max, Math.max(min, number)) : fallback; }
 function numberValue(value: unknown) {
   if (value === null || value === undefined || value === "") return null;
