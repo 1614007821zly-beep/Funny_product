@@ -82,6 +82,8 @@ export const schedules = sqliteTable("schedules", {
   source: text("source").notNull().default("manual"),
   sourceReference: text("source_reference"),
   factsJson: text("facts_json").notNull().default("{}"),
+  completionRequestedByUserId: text("completion_requested_by_user_id").references(() => users.id),
+  completedAt: text("completed_at"),
   version: integer("version").notNull().default(1),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
@@ -91,6 +93,29 @@ export const schedules = sqliteTable("schedules", {
   index("idx_schedules_relationship_date").on(table.relationshipId, table.eventDate),
   index("idx_schedules_relationship_status").on(table.relationshipId, table.status),
   uniqueIndex("idx_schedules_owner_source_reference").on(table.createdByUserId, table.sourceReference),
+]);
+
+// Each participant keeps their own factual copy. Personal contributions are
+// read from their owner's row, never copied into the other participant's row.
+export const memories = sqliteTable("memories", {
+  id: text("id").primaryKey(),
+  scheduleId: text("schedule_id").references(() => schedules.id),
+  ownerUserId: text("owner_user_id").notNull().references(() => users.id),
+  relationshipId: text("relationship_id").references(() => relationships.id),
+  title: text("title").notNull(),
+  eventDate: text("event_date").notNull(),
+  city: text("city").notNull(),
+  factsJson: text("facts_json").notNull().default("{}"),
+  note: text("note").notNull().default(""),
+  mediaId: text("media_id"),
+  contributionShared: integer("contribution_shared", { mode: "boolean" }).notNull().default(false),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  deletedAt: text("deleted_at"),
+}, table => [
+  uniqueIndex("idx_memories_schedule_owner").on(table.scheduleId, table.ownerUserId),
+  index("idx_memories_owner_date").on(table.ownerUserId, table.eventDate),
 ]);
 
 export const importantDays = sqliteTable("important_days", {

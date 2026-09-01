@@ -8,7 +8,7 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.ok(api.indexOf("searchAmapCandidates(amapKey, safeInput)") < api.indexOf("generatePlans(aiHubMixKey, safeInput, weather, candidates)"));
+  assert.ok(api.indexOf("searchAmapCandidates(amapKey, safeInput)") < api.indexOf("generatePlans(aiHubMixKey, safeInput, weather, candidates, aiConfig)"));
   assert.match(api, /Promise\.all\(intents\.map/);
   assert.match(api, /const bestById = new Map/);
   assert.match(api, /right\.score - left\.score/);

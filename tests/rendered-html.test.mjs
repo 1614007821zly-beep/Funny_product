@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V1.17 experience", async () => {
+test("server-renders the Love Diary V51 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V1\.17/);
+  assert.match(html, /<title>恋爱日记 V51/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -75,8 +75,8 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /fetch\("\/api\/inspiration"/);
   assert.match(api, /process\.env\.AIHUBMIX_API_KEY/);
   assert.match(api, /process\.env\.AMAP_WEB_SERVICE_KEY/);
-  assert.match(api, /aihubmix\.com\/v1\/chat\/completions/);
-  assert.match(api, /lfm-2\.5-2\.6b-free/);
+  assert.match(api, /inspirationAIConfig\(process.env\)/);
+  assert.match(api, /parseAIPlans\(await response.json\(\)/);
   assert.match(api, /response_format/);
   assert.match(api, /const timeline = composition\.included\.length > 1/);
   assert.match(api, /title: "从容出发"/);
@@ -88,7 +88,8 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /PlaceCandidates/);
   assert.match(page, /daySchedules=valid\?schedules\.filter/);
   assert.match(page, /距离待定位/);
-  assert.match(api, /value === null \|\| value === undefined \|\| value === ""/);
+  assert.match(api, /const distance = geographicDistance\(input\.longitude, input\.latitude, location\)/);
+  assert.match(api, /if \(!validCoordinates\(longitude, latitude\)\) return null/);
   assert.match(api, /RATE_LIMIT/);
   assert.match(api, /getChatGPTUser/);
   assert.match(api, /AUTH_REQUIRED/);
@@ -97,7 +98,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(api, /ai_service_state/);
   assert.match(api, /AI_CIRCUIT_OPEN/);
   assert.match(api, /SENSITIVE_INPUT/);
-  assert.match(page, /AI 尚未配置，当前显示备用方案/);
+  assert.match(page, /暂时无法生成符合条件的方案/);
   assert.match(page, /\/signin-with-chatgpt\?return_to=/);
   assert.match(page, /fetch\("\/api\/relationship\/join"/);
   assert.match(page, /input\.type = "text"/);
@@ -131,8 +132,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /TA 已发出邀请/);
   assert.match(page, /scheduleDraft\.title \|\| currentPlan\.title/);
   assert.match(page, /schedule\.visibility==="shared"\?"共同安排":"我的计划"/);
-  assert.match(page, /活动日期到来后，双方才能确认完成并生成基础回忆/);
-  assert.match(page, /setCompleted\(false\); setMyConfirmed\(false\); setTaConfirmed\(false\)/);
+  assert.match(page, /到达安排开始时间后，双方才能确认完成/);
+  assert.match(page, /updateScheduleCompletion\("confirm_complete"\)/);
+  assert.doesNotMatch(page, /模拟 TA 确认完成/);
   assert.match(schedulesApi, /pending_partner/);
   assert.match(schedulesApi, /body\.action === "cancel"/);
   assert.match(schedulesApi, /body\.action === "delete"/);
@@ -196,7 +198,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.doesNotMatch(page, /new URLSearchParams/);
   assert.doesNotMatch(page, /window\.localStorage\.setItem\("love-diary-v112"/);
   assert.match(page, /旧计划不会自动恢复/);
-  assert.match(page, /AI 服务暂时繁忙，已切换为可继续编辑的备用方案/);
+  assert.doesNotMatch(page, /AI 服务暂时繁忙，已切换为可继续编辑的备用方案/);
   assert.match(page, /hasRelationship&&<><label>TA 的昵称/);
   assert.match(css, /@media\(max-width:960px\)/);
   assert.match(page, /onClick=\{\(\)=>void saveProfileEdits\(\)\}/);

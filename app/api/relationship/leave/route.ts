@@ -24,8 +24,12 @@ export async function POST(request: Request) {
       WHERE status='pending' AND inviter_user_id IN
       (SELECT user_id FROM relationship_members WHERE relationship_id=?)`).bind(member.relationship_id),
   ];
-  if (safety) statements.unshift(env.DB.prepare(`UPDATE user_media SET status='retracted',retracted_at=?
-    WHERE owner_user_id=? AND relationship_id=? AND visibility='shared' AND status='active'`).bind(now, identity.userId, member.relationship_id));
+  if (safety) statements.unshift(
+    env.DB.prepare(`UPDATE memories SET note='',media_id=NULL,contribution_shared=0,updated_at=?,version=version+1
+      WHERE owner_user_id=? AND relationship_id=? AND contribution_shared=1`).bind(now, identity.userId, member.relationship_id),
+    env.DB.prepare(`UPDATE user_media SET status='retracted',retracted_at=?
+      WHERE owner_user_id=? AND relationship_id=? AND visibility='shared' AND status='active'`).bind(now, identity.userId, member.relationship_id),
+  );
   await env.DB.batch(statements);
   if (safety) await Promise.all((ownedSharedMedia.results ?? []).map(media => env.MEDIA.delete(media.object_key)));
   return Response.json({ ok: true });

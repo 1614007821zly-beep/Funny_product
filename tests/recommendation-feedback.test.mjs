@@ -18,6 +18,7 @@ function compile(source, bindings = {}) {
 const home = page.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'Home');
 // Execute the shipped handlers with isolated state/network boundaries; this is not a DOM test.
 const shared = compile(fs.readFileSync(`${root}/lib/recommendation-feedback.ts`, 'utf8') + '\nexports;');
+const ai = compile(fs.readFileSync(`${root}/lib/inspiration-ai.ts`, 'utf8') + '\nexports;');
 const helpers = named(page.statements, 'toPlan');
 const handlers = ['generate', 'replaceSelectedPlan', 'replacePlanBatch', 'dislikeCurrentPlan'].map(n => named(home.body.statements, n)).join('\n');
 const create = compile(`
@@ -30,17 +31,17 @@ ${helpers}
   const choices = { time:'今晚', budget:'¥100–300', special:'', vibe:'安静', space:'都可以' };
   const myStates = ['想放松']; const hasRelationship = false; const inspirationCity = '成都';
   const locationPrefs = { district:'', districtSource:'none', radius:5000, longitude:104.08, latitude:30.65 };
-  const requestController = { current:null }; const generationRefresh = { current:false };
+  const requestController = { current:null }; const generationRefresh = { current:false }; const weatherRequest = { current:0 };
   const setter = key => value => { state[key] = typeof value === 'function' ? value(state[key]) : value; };
-  const setAiPlans=setter('aiPlans'), setMorePlans=setter('morePlans'), setSeenPlaceIds=setter('seenPlaceIds'), setRecommendationFeedback=setter('recommendationFeedback'), setSelectedPlan=setter('selectedPlan'), setSelectedPlaceIndexes=setter('selectedPlaceIndexes'), setGenerationError=setter('generationError'), setLoadingFailed=setter('loadingFailed'), setCandidatePool=setter('candidatePool'), setWeather=setter('weather'), setHasGenerated=setter('hasGenerated');
+  const setAiPlans=setter('aiPlans'), setMorePlans=setter('morePlans'), setSeenPlaceIds=setter('seenPlaceIds'), setRecommendationFeedback=setter('recommendationFeedback'), setSelectedPlan=setter('selectedPlan'), setSelectedPlaceIndexes=setter('selectedPlaceIndexes'), setGenerationError=setter('generationError'), setLoadingFailed=setter('loadingFailed'), setCandidatePool=setter('candidatePool'), setWeather=setter('weather'), setHasGenerated=setter('hasGenerated'), setViewingSavedRoute=setter('viewingSavedRoute');
   const notices=[], requests=[], signals=[];
   const notify = text => notices.push(text); const go = screen => { state.screen=screen; };
   const fetch = async (url, options) => { requests.push(JSON.parse(options.body)); signals.push(options.signal); return { ok:true, json:async () => respond ? respond(requests.at(-1)) : ({ plans:[], morePlans:[] }) }; };
   ${handlers}
   return { state, notices, requests, signals, generationRefresh, generate, replaceSelectedPlan, replacePlanBatch, dislikeCurrentPlan, planAllowedByFeedback };
 })`, shared);
-const apiNames = ['requestFeedback','feedbackLimit','sanitizeInput','clean','finiteNumber','clampNumber','budgetBand','scoreCandidate','composePlacesForBudget','knownPlaceCost','brandKey','routeDistance','geographicDistance','validCoordinates','budgetMatchSummary','buildCandidateFallbackPlans'];
-const api = compile(`${apiNames.map(n => named(route.statements, n)).join('\n')}\n({sanitizeInput, scoreCandidate, buildCandidateFallbackPlans, requestFeedback});`, shared);
+const apiNames = ['requestFeedback','feedbackLimit','sanitizeInput','clean','finiteNumber','clampNumber','budgetBand','scoreCandidate','composePlacesForBudget','eligibleCandidate','lowMobilityTimeline','knownPlaceCost','brandKey','routeDistance','geographicDistance','validCoordinates','budgetMatchSummary','buildCandidateFallbackPlans'];
+const api = compile(`${apiNames.map(n => named(route.statements, n)).join('\n')}\n({sanitizeInput, scoreCandidate, buildCandidateFallbackPlans, requestFeedback});`, {...shared,...ai});
 function place(id, overrides={}) {
   return { id, name:`场所${id}`, category:'咖啡馆', distance:500, cost:'50', address:'', businessArea:'', rating:'4.5', openTimeToday:'', location:'104.08,30.65', recommendationReasons:[], score:50, ...overrides };
 }
@@ -146,6 +147,13 @@ await check('补充失败时不退回不满足反馈的演示方案', async () =
   await h.generate(false,true);
   assert.equal(h.state.loadingFailed,true); assert.notEqual(h.state.aiPlans,null);
   assert.equal(h.requests.length,1);
+});
+
+await check('首次生成失败也保留可恢复错误，不把演示方案冒充结果', async () => {
+  const h=create(initial(),()=>({code:'GENERATION_FAILED'}));
+  await h.generate(false,false);
+  assert.equal(h.state.loadingFailed,true); assert.equal(h.state.screen,'loading');
+  assert.equal(h.state.aiPlans[0].title,'方案a'); assert.equal(h.requests.length,1);
 });
 
 await check('反馈更近使用整个当前组合的最远距离', () => {

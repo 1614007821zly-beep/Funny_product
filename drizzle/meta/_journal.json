@@ -57,6 +57,13 @@
       "when": 1787838919590,
       "tag": "0007_high_gwen_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788255827151,
+      "tag": "0008_uneven_kree",
+      "breakpoints": true
     }
   ]
 }

@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
 import { getChatGPTUser, type ChatGPTUser } from "../../chatgpt-auth";
+import { hasScheduleStarted, normalizeScheduleFacts } from "../../../lib/schedule-facts";
 
 export const dynamic = "force-dynamic";
 
-type ScheduleAction = "accept" | "cancel" | "delete" | "update" | "share";
+type ScheduleAction = "accept" | "cancel" | "delete" | "update" | "share" | "request_complete" | "confirm_complete";
 type ScheduleVisibility = "personal" | "shared";
 type ScheduleSource = "manual" | "ai" | "legacy_import";
 type ScheduleInput = {
@@ -15,6 +16,8 @@ type ScheduleInput = {
   action?: ScheduleAction;
   visibility?: ScheduleVisibility;
   source?: ScheduleSource;
+  facts?: unknown;
+  version?: number;
 };
 
 type Membership = { relationship_id: string };
@@ -34,6 +37,9 @@ type StoredSchedule = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  facts_json: string;
+  completion_requested_by_user_id: string | null;
+  completed_at: string | null;
 };
 
 async function activeRelationship(userId: string) {
@@ -71,7 +77,7 @@ export async function GET() {
       .bind(identity.userId, today);
   const result = await query.all<StoredSchedule>();
   const schedules = result.results ?? [];
-  return json({ schedule: schedules[0] ?? null, schedules });
+  return json({ schedule: schedules.find(schedule => schedule.status !== "completed") ?? null, schedules });
 }
 
 export async function POST(request: Request) {
@@ -86,12 +92,16 @@ export async function POST(request: Request) {
     return json({ error: "请求内容不是有效的 JSON。" }, 400);
   }
 
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "请求内容无效。" }, 400);
   const title = clean(body.title, 80);
   const eventDate = clean(body.eventDate, 10);
   const eventTime = clean(body.eventTime, 5);
   const city = clean(body.city, 40);
   const source: ScheduleSource = ["ai", "legacy_import"].includes(body.source ?? "") ? body.source as ScheduleSource : "manual";
   const visibility: ScheduleVisibility = body.visibility === "shared" && source !== "legacy_import" ? "shared" : "personal";
+  const facts = body.facts == null ? null : normalizeScheduleFacts(body.facts);
+  if (body.facts != null && (!facts || facts.city !== city)) return json({ error: "路线快照无效或与安排城市不一致，请重新选择灵感。" }, 400);
+  if (facts) facts.capturedAt = new Date().toISOString();
   if (!title || !validDate(eventDate) || !validTime(eventTime) || !city) {
     return json({ error: "请完整填写有效的安排名称、日期、时间和城市。" }, 400);
   }
@@ -118,8 +128,8 @@ export async function POST(request: Request) {
 
   await env.DB.prepare(`INSERT INTO schedules
     (id,relationship_id,created_by_user_id,accepted_by_user_id,visibility,title,event_date,event_time,city,status,source,source_reference,facts_json,version,created_at,updated_at,deleted_at)
-    VALUES (?,?,?,NULL,?,?,?,?,?,?,?,?, '{}',1,?,?,NULL)`)
-    .bind(id, membership?.relationship_id ?? null, identity.userId, visibility, title, eventDate, eventTime, city, status, source, null, now, now).run();
+    VALUES (?,?,?,NULL,?,?,?,?,?,?,?,?, ?,1,?,?,NULL)`)
+    .bind(id, membership?.relationship_id ?? null, identity.userId, visibility, title, eventDate, eventTime, city, status, source, null, JSON.stringify(facts ?? {}), now, now).run();
   const schedule = await env.DB.prepare(`${scheduleColumns()} FROM schedules WHERE id=?`).bind(id).first<StoredSchedule>();
   return json({ schedule }, 201);
 }
@@ -135,7 +145,7 @@ export async function PATCH(request: Request) {
   } catch {
     return json({ error: "请求内容不是有效的 JSON。" }, 400);
   }
-  if (!body.id || !["accept", "cancel", "delete", "update", "share"].includes(body.action ?? "")) {
+  if (!body || typeof body.id !== "string" || !["accept", "cancel", "delete", "update", "share", "request_complete", "confirm_complete"].includes(body.action ?? "")) {
     return json({ error: "不支持的操作。" }, 400);
   }
 
@@ -147,6 +157,42 @@ export async function PATCH(request: Request) {
   if (!ownsPersonal && !belongsToRelationship) return json({ error: "你无权操作这个安排。" }, 403);
 
   const now = new Date().toISOString();
+  const completing = body.action === "request_complete" || body.action === "confirm_complete";
+  if (completing && schedule.status === "completed") return json({ schedule });
+  if (body.action === "request_complete" && schedule.status === "completion_pending" && schedule.completion_requested_by_user_id === identity.userId) return json({ schedule });
+  if (body.version !== undefined && body.version !== schedule.version) return json({ error: "安排已被更新，请刷新后重新确认。" }, 409);
+  if (["cancelled", "completed"].includes(schedule.status) && body.action !== "delete") return json({ error: "已结束的安排不能再修改或重新确认。" }, 409);
+  if (completing) {
+    // Completion must always refer to the version the user actually viewed.
+    if (body.version !== schedule.version) return json({ error: "请先刷新安排，再确认完成。" }, 409);
+    if (!hasScheduleStarted(schedule.event_date, schedule.event_time)) return json({ error: "还未到安排的开始时间，不能确认完成。" }, 409);
+    if (schedule.visibility === "personal" && (body.action !== "request_complete" || schedule.status !== "active")) return json({ error: "个人计划无需第二人确认。" }, 409);
+    if (schedule.visibility === "shared") {
+      if (body.action === "request_complete" && schedule.status !== "confirmed") return json({ error: "请先由双方接受安排。" }, 409);
+      if (body.action === "confirm_complete" && (schedule.status !== "completion_pending" || schedule.completion_requested_by_user_id === identity.userId)) return json({ error: "需要另一位参与者确认完成。" }, 409);
+    }
+    const completesNow = schedule.visibility === "personal" || body.action === "confirm_complete";
+    const guard = `AND (visibility='personal' OR EXISTS (SELECT 1 FROM relationship_members m JOIN relationships r ON r.id=m.relationship_id WHERE m.relationship_id=schedules.relationship_id AND m.user_id=? AND m.left_at IS NULL AND r.status='active'))`;
+    const update = env.DB.prepare(`UPDATE schedules SET status=?,completion_requested_by_user_id=COALESCE(completion_requested_by_user_id,?),completed_at=?,updated_at=?,version=version+1
+      WHERE id=? AND version=? AND status=? AND deleted_at IS NULL ${guard}`)
+      .bind(completesNow ? "completed" : "completion_pending", identity.userId, completesNow ? now : null, now, schedule.id, schedule.version, schedule.status, identity.userId);
+    const statements = [update];
+    if (completesNow) {
+      // Same transaction: either completion and all factual copies persist, or none do.
+      statements.push(env.DB.prepare(`INSERT OR IGNORE INTO memories (id,schedule_id,owner_user_id,relationship_id,title,event_date,city,facts_json,note,contribution_shared,version,created_at,updated_at)
+        SELECT s.id||':'||s.created_by_user_id,s.id,s.created_by_user_id,s.relationship_id,s.title,s.event_date,s.city,s.facts_json,'',0,1,?,?
+        FROM schedules s WHERE s.id=? AND s.status='completed' AND s.version=? AND s.completed_at=?`)
+        .bind(now, now, schedule.id, schedule.version + 1, now));
+      if (schedule.visibility === "shared") statements.push(env.DB.prepare(`INSERT OR IGNORE INTO memories (id,schedule_id,owner_user_id,relationship_id,title,event_date,city,facts_json,note,contribution_shared,version,created_at,updated_at)
+        SELECT s.id||':'||s.accepted_by_user_id,s.id,s.accepted_by_user_id,s.relationship_id,s.title,s.event_date,s.city,s.facts_json,'',0,1,?,?
+        FROM schedules s WHERE s.id=? AND s.status='completed' AND s.version=? AND s.completed_at=? AND s.accepted_by_user_id IS NOT NULL`)
+        .bind(now, now, schedule.id, schedule.version + 1, now));
+    }
+    const results = await env.DB.batch(statements);
+    if (!results[0].meta.changes) return json({ error: "安排或关系已发生变化，请刷新后重试。" }, 409);
+    const updated = await env.DB.prepare(`${scheduleColumns()} FROM schedules WHERE id=?`).bind(schedule.id).first<StoredSchedule>();
+    return json({ schedule: updated });
+  }
   if (body.action === "share") {
     if (!ownsPersonal) return json({ error: "只能分享自己的个人计划。" }, 403);
     if (!membership) return json({ error: "请先建立关系后再发送给 TA。" }, 409);
@@ -172,8 +218,10 @@ export async function PATCH(request: Request) {
     const status = schedule.visibility === "shared" ? "pending_partner" : "active";
     const result = await env.DB.prepare(`UPDATE schedules SET title=?,event_date=?,event_time=?,city=?,status=?,
       accepted_by_user_id=CASE WHEN visibility='shared' THEN NULL ELSE accepted_by_user_id END,
+      completion_requested_by_user_id=NULL,completed_at=NULL,
+      facts_json=CASE WHEN city=? THEN facts_json ELSE '{}' END,
       updated_at=?,version=version+1 WHERE id=? AND version=? AND deleted_at IS NULL`)
-      .bind(title, eventDate, eventTime, city, status, now, schedule.id, schedule.version).run();
+      .bind(title, eventDate, eventTime, city, status, city, now, schedule.id, schedule.version).run();
     if (!result.meta.changes) return json({ error: "安排刚刚已被更新，请刷新后重试。" }, 409);
     const updated = await env.DB.prepare(`${scheduleColumns()} FROM schedules WHERE id=?`).bind(schedule.id).first<StoredSchedule>();
     return json({ schedule: updated });
@@ -208,7 +256,7 @@ export async function PATCH(request: Request) {
 }
 
 function scheduleColumns() {
-  return `SELECT id,relationship_id,created_by_user_id,accepted_by_user_id,visibility,title,event_date,event_time,city,status,source,version,created_at,updated_at,deleted_at`;
+  return `SELECT id,relationship_id,created_by_user_id,accepted_by_user_id,visibility,title,event_date,event_time,city,status,source,facts_json,completion_requested_by_user_id,completed_at,version,created_at,updated_at,deleted_at`;
 }
 
 function clean(value: unknown, maxLength: number) {
