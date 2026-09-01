@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V51 experience", async () => {
+test("server-renders the Love Diary V54 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V51/);
+  assert.match(html, /<title>恋爱日记 V54/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -66,6 +66,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /aria-modal="true"/);
   assert.match(page, /aria-live="polite"/);
   assert.match(page, /type="datetime-local"/);
+  assert.match(page, /name="schedule-time"[\s\S]*onInput=/);
+  assert.match(page, /name="edit-date-time"[\s\S]*onInput=/);
+  assert.match(layout, /\/favicon\.ico/);
   assert.match(page, /aria-pressed=\{reportReason/);
   assert.match(css, /prefers-reduced-motion:reduce/);
   assert.match(css, /:focus-visible/);
