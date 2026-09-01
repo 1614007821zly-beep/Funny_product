@@ -21,7 +21,7 @@ async function ensureUser(input?: ProfileInput) {
 }
 
 async function accountSnapshot(userId: string) {
-  const user = await env.DB.prepare("SELECT id,email,nickname,birthday,city FROM users WHERE id=?").bind(userId).first();
+  const userRow = await env.DB.prepare("SELECT id,email,nickname,birthday,city,onboarding_completed_at FROM users WHERE id=?").bind(userId).first();
   const relationship = await env.DB.prepare(`SELECT r.id, r.status, u.id AS partner_id, u.nickname AS partner_name, u.birthday AS partner_birthday,
       me.history_sharing_mode, me.history_sharing_reviewed_at
     FROM relationship_members me JOIN relationships r ON r.id=me.relationship_id
@@ -31,6 +31,7 @@ async function accountSnapshot(userId: string) {
   const invite = await env.DB.prepare(`SELECT code,partner_note,expires_at,status FROM relationship_invites
     WHERE inviter_user_id=? AND status='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1`)
     .bind(userId, new Date().toISOString()).first();
+  const user = userRow ? { id: userRow.id, email: userRow.email, nickname: userRow.nickname, birthday: userRow.birthday, city: userRow.city, onboardingCompleted: Boolean(userRow.onboarding_completed_at) } : null;
   return { user, relationship, invite };
 }
 
@@ -44,5 +45,6 @@ export async function POST(request: Request) {
   const body = await request.json() as ProfileInput;
   const identity = await ensureUser(body);
   if (!identity) return Response.json({ error: "请先登录后再保存资料。" }, { status: 401 });
+  await env.DB.prepare("UPDATE users SET onboarding_completed_at=COALESCE(onboarding_completed_at,?) WHERE id=?").bind(new Date().toISOString(), identity.userId).run();
   return Response.json({ ok: true, authenticated: true, ...(await accountSnapshot(identity.userId)) });
 }

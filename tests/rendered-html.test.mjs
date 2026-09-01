@@ -30,7 +30,7 @@ test("server-renders the Love Diary V51 experience", async () => {
 });
 
 test("keeps accessibility and interaction safeguards in source", async () => {
-  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, historySharingApi, schedulesApi, importantDaysApi, tasksApi, preferencesApi, feedbackApi, mediaApi, shareLinksApi, exportApi, sharePage, holidays, schema, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration, historySharingMigration, sharedExperienceMigration, stageFourMigration, hosting] = await Promise.all([
+  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, historySharingApi, schedulesApi, importantDaysApi, tasksApi, preferencesApi, feedbackApi, mediaApi, shareLinksApi, exportApi, sharePage, holidays, schema, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration, historySharingMigration, sharedExperienceMigration, stageFourMigration, onboardingMigration, hosting] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -57,6 +57,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
     readFile(new URL("../drizzle/0005_acoustic_ben_grimm.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0006_lowly_mastermind.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0007_high_gwen_stacy.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0009_blushing_metal_master.sql", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
   ]);
 
@@ -116,6 +117,8 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(css, /\.bottom-sheet label:focus-within\{box-shadow:none\}/);
   assert.match(accountApi, /getChatGPTUser/);
   assert.match(accountApi, /authenticated: true/);
+  assert.match(accountApi, /onboardingCompleted: Boolean/);
+  assert.match(accountApi, /onboarding_completed_at=COALESCE/);
   assert.match(inviteApi, /expiresAt/);
   assert.match(joinApi, /env\.DB\.batch/);
   assert.match(leaveApi, /UPDATE relationship_members SET left_at=\? WHERE relationship_id=\? AND left_at IS NULL/);
@@ -238,6 +241,8 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(stageFourMigration, /CREATE TABLE `user_media`/);
   assert.match(stageFourMigration, /CREATE TABLE `schedule_share_links`/);
   assert.match(stageFourMigration, /CREATE TABLE `feedback_entries`/);
+  assert.match(onboardingMigration, /ALTER TABLE `users` ADD `onboarding_completed_at`/);
+  assert.match(onboardingMigration, /FROM `relationship_members`/);
   assert.match(hosting, /"r2": "MEDIA"/);
   assert.match(schema, /relationshipMembers/);
   assert.match(schema, /relationshipInvites/);

@@ -7,6 +7,7 @@ export const users = sqliteTable("users", {
   nickname: text("nickname").notNull(),
   birthday: text("birthday"),
   city: text("city").notNull().default("杭州"),
+  onboardingCompletedAt: text("onboarding_completed_at"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, table => [uniqueIndex("idx_users_email").on(table.email)]);
