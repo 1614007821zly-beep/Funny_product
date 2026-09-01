@@ -206,6 +206,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /fetch\("\/api\/preferences"/);
   assert.match(page, /fetch\("\/api\/feedback"/);
   assert.match(page, /fetch\("\/api\/media"/);
+  assert.match(page, /currentMemory\?\.partnerContribution\?\.mediaUrl/);
+  assert.match(page, /照片 · TA 分享/);
+  assert.match(page, /撤回已分享的文字和照片/);
   assert.match(page, /fetch\("\/api\/share-links"/);
   assert.match(page, /fetch\("\/api\/account\/export"/);
   assert.match(page, /calendarDayStatus\(dateKey\)/);
