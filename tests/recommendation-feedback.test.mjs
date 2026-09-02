@@ -24,18 +24,20 @@ const handlers = ['generate', 'replaceSelectedPlan', 'replacePlanBatch', 'dislik
 const create = compile(`
 ${helpers}
 (function(initial, respond) {
-  const state = { aiPlans: [], morePlans: [], seenPlaceIds: [], recommendationFeedback: emptyRecommendationFeedback(), selectedPlan: 0, selectedPlaceIndexes: [0,0,0], generationError: '', loadingFailed: false, screen: 'results', ...initial };
+  const state = { aiPlans: [], morePlans: [], seenPlaceIds: [], recommendationFeedback: emptyRecommendationFeedback(), selectedPlan: 0, selectedPlaceIndexes: [0,0,0], generationError: '', loadingFailed: false, serviceIssues: {}, screen: 'results', ...initial };
   const { aiPlans, morePlans, seenPlaceIds, recommendationFeedback, selectedPlan } = state;
   const eligibleMorePlans = selectUnseenPlans(morePlans, recommendationFeedback, seenPlaceIds);
   const currentPlan = aiPlans[selectedPlan];
   const choices = { time:'今晚', budget:'¥100–300', special:'', vibe:'安静', space:'都可以' };
-  const myStates = ['想放松']; const hasRelationship = false; const inspirationCity = '成都';
+  const myStates = ['想放松']; const hasRelationship = false; const inspirationCity = '成都'; const profile = { city:'成都' };
   const locationPrefs = { district:'', districtSource:'none', radius:5000, longitude:104.08, latitude:30.65 };
   const requestController = { current:null }; const generationRefresh = { current:false }; const weatherRequest = { current:0 };
   const setter = key => value => { state[key] = typeof value === 'function' ? value(state[key]) : value; };
   const setAiPlans=setter('aiPlans'), setMorePlans=setter('morePlans'), setSeenPlaceIds=setter('seenPlaceIds'), setRecommendationFeedback=setter('recommendationFeedback'), setSelectedPlan=setter('selectedPlan'), setSelectedPlaceIndexes=setter('selectedPlaceIndexes'), setGenerationError=setter('generationError'), setLoadingFailed=setter('loadingFailed'), setCandidatePool=setter('candidatePool'), setWeather=setter('weather'), setHasGenerated=setter('hasGenerated'), setViewingSavedRoute=setter('viewingSavedRoute');
   const notices=[], requests=[], signals=[];
   const notify = text => notices.push(text); const go = screen => { state.screen=screen; };
+  const reportServiceIssue = (source,title,detail) => { state.serviceIssues = {...state.serviceIssues,[source]:{source,title,detail}}; };
+  const clearServiceIssue = source => { const next={...state.serviceIssues}; delete next[source]; state.serviceIssues=next; };
   const fetch = async (url, options) => { requests.push(JSON.parse(options.body)); signals.push(options.signal); return { ok:true, json:async () => respond ? respond(requests.at(-1)) : ({ plans:[], morePlans:[] }) }; };
   ${handlers}
   return { state, notices, requests, signals, generationRefresh, generate, replaceSelectedPlan, replacePlanBatch, dislikeCurrentPlan, planAllowedByFeedback };

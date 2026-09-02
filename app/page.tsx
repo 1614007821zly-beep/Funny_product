@@ -29,6 +29,8 @@ type ResolvedLocation = { city: string; district: string; businessArea: string; 
 type CandidatePool = { rawCount: number; candidateCount: number; categories: string[]; pagesFetched: number };
 type GeneratedPlanResponse = { title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean };
 type FeedbackReason = "太远" | "太贵" | "太普通" | "不符合状态" | "地点不合适";
+type ServiceIssueSource = "ai" | "location" | "weather" | "sync";
+type ServiceIssue = { source: ServiceIssueSource; title: string; detail: string };
 
 const LEGACY_STORAGE_KEYS = ["love-diary-v112", "love-diary-v17", "love-diary-v16", "love-diary-v15", "love-diary-v14"];
 const INSPIRATION_DRAFT_KEY = "love-diary-inspiration-draft-v1";
@@ -147,6 +149,7 @@ export default function Home() {
   const [placeVersion, setPlaceVersion] = useState(0);
   const [selectedPlaceIndexes, setSelectedPlaceIndexes] = useState([0, 0, 0]);
   const [locationPrefs, setLocationPrefs] = useState<LocationPreferences>({ city: "", district: "", districtSource: "none", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
+  const districtInputRef = useRef<HTMLInputElement>(null);
   const [choices, setChoices] = useState({ mood: "想放松", taMood: "和我一样", vibe: "安静", time: "今晚", budget: "¥100–300", space: "都可以", special: "" });
   const [myStates, setMyStates] = useState<string[]>(["想放松"]);
   const [customStates, setCustomStates] = useState<string[]>([]);
@@ -160,6 +163,9 @@ export default function Home() {
   const [seenPlaceIds, setSeenPlaceIds] = useState<string[]>([]);
   const [recommendationFeedback, setRecommendationFeedback] = useState<RecommendationFeedback>(emptyRecommendationFeedback);
   const [generationError, setGenerationError] = useState("");
+  const [serviceIssues, setServiceIssues] = useState<Partial<Record<ServiceIssueSource, ServiceIssue>>>({});
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
+  const [syncBusy, setSyncBusy] = useState(false);
   const [weather, setWeather] = useState<WeatherForecast | null>(null);
   const weatherRequest = useRef(0);
   const [candidatePool, setCandidatePool] = useState<CandidatePool | null>(null);
@@ -232,14 +238,21 @@ export default function Home() {
   function go(next: Screen, replace = false) { if (screen === "loading" && next !== "results") { if (generationTimer.current) { window.clearTimeout(generationTimer.current); generationTimer.current = null; } requestController.current?.abort(); } if (!replace) history.current.push(screen); const method = replace ? "replaceState" : "pushState"; window.history[method]({ screen: next }, "", `#${next}`); setScreen(next); window.scrollTo({ top: 0, behavior: "smooth" }); }
   function back(fallback: Screen = "home") { const previous = history.current.pop(); if (previous) window.history.back(); else go(fallback, true); }
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 1800); }
+  function reportServiceIssue(source: ServiceIssueSource, title: string, detail: string) { setServiceIssues(current => ({ ...current, [source]: { source, title, detail } })); }
+  function clearServiceIssue(source: ServiceIssueSource) { setServiceIssues(current => { if (!current[source]) return current; const next = { ...current }; delete next[source]; return next; }); }
+  function syncIssueDetail() {
+    if (!lastSyncAt) return "已保留当前页面内容，但可能不是最新状态。请检查网络后重新同步。";
+    const time = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(lastSyncAt);
+    return `已保留 ${time} 成功同步的内容，但可能不是最新状态。请检查网络后重新同步。`;
+  }
   async function loadAccount(silent = false) {
     try {
       const response = await fetch("/api/account", { cache: "no-store" });
       const data = await response.json() as AccountSnapshot;
-      if (response.status === 401) { setAccount({ authenticated: false }); setSharedSchedule(null); setSchedules([]); setMemories([]); setCurrentMemory(null); setTaskRecord(null); setTasks([]); setImportantDays([]); setScheduleLoaded(true); setAdopted(false); return null; }
+      if (response.status === 401) { setAccount({ authenticated: false }); setSharedSchedule(null); setSchedules([]); setMemories([]); setCurrentMemory(null); setTaskRecord(null); setTasks([]); setImportantDays([]); setScheduleLoaded(true); setAdopted(false); setServiceIssues({}); setLastSyncAt(null); return null; }
       if (!response.ok) throw new Error("账号状态读取失败");
       if (account?.user?.id && data.user?.id && account.user.id !== data.user.id) {
-        setSharedSchedule(null); setSchedules([]); setMemories([]); setCurrentMemory(null); setTaskRecord(null); setTasks([]); setImportantDays([]); setScheduleLoaded(false); setAdopted(false);
+        setSharedSchedule(null); setSchedules([]); setMemories([]); setCurrentMemory(null); setTaskRecord(null); setTasks([]); setImportantDays([]); setScheduleLoaded(false); setAdopted(false); setServiceIssues({}); setLastSyncAt(null);
       }
       setAccount(data);
       if (data.user) setProfile({ name: data.user.nickname, birthday: dateFieldValue(data.user.birthday), city: data.user.city });
@@ -265,11 +278,11 @@ export default function Home() {
     } catch (error) { setRelationshipError(error instanceof Error ? error.message : "邀请码生成失败。"); }
     finally { setAccountBusy(false); }
   }
-  async function loadSharedSchedule(silent = false, preserveCalendar = false) {
-    if (!account?.authenticated && !silent) return;
+  async function loadSharedSchedule(silent = false, preserveCalendar = false): Promise<boolean> {
+    if (!account?.authenticated) return true;
     try {
       const response = await fetch("/api/schedules", { cache: "no-store" });
-      if (response.status === 401) return;
+      if (response.status === 401) return true;
       const data = await response.json() as { schedule?: ScheduleRecord | null; schedules?: ScheduleRecord[]; error?: string };
       if (!response.ok) throw new Error(data.error || "安排读取失败。");
       const schedule = data.schedule ?? null;
@@ -280,39 +293,70 @@ export default function Home() {
         if (!preserveCalendar) showDateInCalendar(localDate(schedule.event_date));
         setAdopted(true); setPartnerAccepted(["confirmed","completion_pending","completed"].includes(schedule.status)); setCancelled(schedule.status === "cancelled");
       } else if (account?.authenticated) { setAdopted(false); setPartnerAccepted(false); }
-    } catch { if (!silent) notify("安排同步失败，请稍后重试"); }
+      return true;
+    } catch {
+      reportServiceIssue("sync", "共同内容暂时没有同步", syncIssueDetail());
+      if (!silent) notify("安排同步失败，当前内容已保留");
+      return false;
+    }
     finally { setScheduleLoaded(true); }
   }
-  async function loadSharedExperiences(silent = false) {
-    if (!account?.authenticated && !silent) return;
+  async function loadSharedExperiences(silent = false): Promise<boolean> {
+    if (!account?.authenticated) return true;
     try {
       const [taskResponse, importantResponse] = await Promise.all([
         fetch("/api/tasks", { cache: "no-store" }),
         fetch("/api/important-days", { cache: "no-store" }),
       ]);
-      if (taskResponse.status === 401 || importantResponse.status === 401) return;
+      if (taskResponse.status === 401 || importantResponse.status === 401) return true;
       const taskData = await taskResponse.json() as { task?: TaskRecord | null; tasks?: TaskRecord[]; available?: boolean; error?: string };
       const importantData = await importantResponse.json() as { importantDays?: ImportantDayRecord[]; available?: boolean; error?: string };
       if (!taskResponse.ok || !importantResponse.ok) throw new Error(taskData.error || importantData.error || "共同内容读取失败。");
       setSharedExperiencesAvailable(taskData.available !== false && importantData.available !== false);
       setTaskRecord(taskData.task ?? null); setTasks(taskData.tasks ?? []); setImportantDays(importantData.importantDays ?? []);
-    } catch { if (!silent) notify("任务与重要日子同步失败，请稍后重试"); }
+      return true;
+    } catch {
+      reportServiceIssue("sync", "共同内容暂时没有同步", syncIssueDetail());
+      if (!silent) notify("任务与重要日子同步失败，当前内容已保留");
+      return false;
+    }
   }
-  async function loadWeather(cityInput: string, silent = false) {
+  async function refreshSharedData(preserveCalendar = true, announce = false) {
+    if (!account?.authenticated) return;
+    if (announce) setSyncBusy(true);
+    const [scheduleOk, experiencesOk] = await Promise.all([loadSharedSchedule(true, preserveCalendar), loadSharedExperiences(true)]);
+    if (scheduleOk && experiencesOk) {
+      setLastSyncAt(nowEpoch); clearServiceIssue("sync");
+      if (announce) notify("已同步最新共同内容");
+    } else {
+      reportServiceIssue("sync", "共同内容暂时没有同步", syncIssueDetail());
+    }
+    if (announce) setSyncBusy(false);
+  }
+  async function loadWeather(cityInput: string, silent = false, force = false): Promise<boolean> {
     const city = cityInput.trim();
-    if (!city || !account?.authenticated) return;
+    if (!city || !account?.authenticated) return true;
     const fetchedAt = weather?.queryCity === city ? Date.parse(weather.fetchedAt) : 0;
-    if (fetchedAt && Date.now() - fetchedAt < 10 * 60_000) return;
+    if (!force && fetchedAt && Date.now() - fetchedAt < 10 * 60_000) { clearServiceIssue("weather"); return true; }
     const requestId = ++weatherRequest.current;
-    if (weather?.queryCity !== city) setWeather(null);
+    if (weather?.queryCity !== city) { setWeather(null); clearServiceIssue("weather"); }
     try {
       const response = await fetch(`/api/weather?city=${encodeURIComponent(city)}`, { cache: "no-store" });
-      if (response.status === 401) return;
-      const data = await response.json() as { weather?: WeatherForecast; error?: string };
+      if (response.status === 401) return true;
+      const data = await response.json() as { weather?: WeatherForecast; error?: string; code?: string };
       if (!response.ok || !data.weather) throw new Error(data.error || "天气读取失败。");
-      if (requestId !== weatherRequest.current || data.weather.queryCity !== city) return;
-      setWeather(data.weather);
-    } catch { if (!silent) notify("天气暂时无法获取，请稍后再试"); }
+      if (requestId !== weatherRequest.current || data.weather.queryCity !== city) return true;
+      setWeather(data.weather); clearServiceIssue("weather"); return true;
+    } catch (error) {
+      if (requestId !== weatherRequest.current) return false;
+      setWeather(null);
+      const detail = error instanceof Error && /城市|地区/.test(error.message)
+        ? "请确认城市名称，或切换城市后重新获取天气。"
+        : "不影响继续规划；可以现在重试，也可以稍后查看。";
+      reportServiceIssue("weather", /城市|地区/.test(error instanceof Error ? error.message : "") ? "无法识别这个城市" : "天气暂时无法获取", detail);
+      if (!silent) notify("天气暂时无法获取，仍可继续规划");
+      return false;
+    }
   }
 
   function selectedFacts(): ScheduleFacts | null {
@@ -597,9 +641,12 @@ export default function Home() {
     setInviteCodeValue(""); setJoinCode(""); setReportReason(""); setPanel(""); history.current=[]; go("relationshipArchive",true);
   }
   function useCurrentLocation() {
-    if (!navigator.geolocation) { notify("当前浏览器不支持定位，请填写商圈"); return; }
+    if (!navigator.geolocation) {
+      reportServiceIssue("location", "当前浏览器不支持定位", "可以直接填写商圈或区域，其他灵感条件不受影响。");
+      notify("当前浏览器不支持定位，请填写商圈"); return;
+    }
     if (isLocating) return;
-    setIsLocating(true);
+    clearServiceIssue("location"); setIsLocating(true);
     notify("正在获取当前位置…");
     navigator.geolocation.getCurrentPosition(
       async position => {
@@ -611,39 +658,57 @@ export default function Home() {
           if (!response.ok || !data.location) throw new Error(data.error || "区域识别失败");
           const resolved = data.location;
           setLocationPrefs(current => ({ ...current, city: resolved.city, district: resolved.businessArea || resolved.district, districtSource: "auto", longitude: resolved.longitude, latitude: resolved.latitude, label: `已定位 · ${resolved.city}${resolved.displayName} · 精度约 ${accuracy} 米` }));
+          clearServiceIssue("location");
           notify(`已自动填写${resolved.displayName}，仍可手动修改`);
         } catch {
           setLocationPrefs(current => ({ ...current, label: `已定位 · 精度约 ${accuracy} 米；区域识别失败，可手动填写` }));
+          reportServiceIssue("location", "已获取位置，但无法识别商圈", "坐标已经保留。可以重新识别，或直接填写商圈后继续生成灵感。");
           notify("已获取坐标，但暂时无法识别商圈，可手动填写");
         } finally { setIsLocating(false); }
       },
-      () => { setLocationPrefs(current => ({ ...current, label: "定位失败，请允许权限或手动填写商圈" })); setIsLocating(false); notify("无法获取定位，请允许权限或手动填写商圈"); },
+      () => {
+        setLocationPrefs(current => ({ ...current, label: "定位失败，请允许权限或手动填写商圈" })); setIsLocating(false);
+        reportServiceIssue("location", "无法获取当前位置", "请允许浏览器定位权限后重试，或直接填写商圈继续使用。");
+        notify("无法获取定位，请允许权限或手动填写商圈");
+      },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
     );
   }
-  async function generate(shouldFail = false, refreshPool = false, feedbackOverride = recommendationFeedback) {
+  async function generate(shouldFail = false, refreshPool = false, feedbackOverride = recommendationFeedback, requestLocation = locationPrefs) {
     requestController.current?.abort(); setViewingSavedRoute(false);
     generationRefresh.current = refreshPool;
-    if (shouldFail) { setGenerationError("这是手动触发的失败状态预览。"); setLoadingFailed(true); go("loading"); return; }
+    if (shouldFail) {
+      const message = "这是手动触发的失败状态预览。已保留全部条件，可以直接重试。";
+      setGenerationError(message); reportServiceIssue("ai", "灵感没有生成成功", message); setLoadingFailed(true); go("loading"); return;
+    }
     const controller = new AbortController();
     requestController.current = controller;
     const activeFeedback = refreshPool ? feedbackOverride : emptyRecommendationFeedback();
     if (!refreshPool) { setRecommendationFeedback(activeFeedback); setSeenPlaceIds([]); }
-    setGenerationError(""); setLoadingFailed(false); setCandidatePool(null); go("loading");
+    setGenerationError(""); clearServiceIssue("ai"); setLoadingFailed(false); setCandidatePool(null); go("loading");
     try {
+      const requestCity = requestLocation.city || profile.city;
       const response = await fetch("/api/inspiration", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ city: inspirationCity, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: locationPrefs.district, districtSource: locationPrefs.districtSource, radius: locationPrefs.radius, longitude: locationPrefs.longitude, latitude: locationPrefs.latitude, excludePlaceIds: refreshPool ? [...new Set([...seenPlaceIds, ...activeFeedback.placeIds])].slice(-60) : [], excludeCategories: refreshPool ? activeFeedback.categories : [], excludeBrands: refreshPool ? activeFeedback.brands.slice(-60) : [], maxDistance: activeFeedback.maxDistance, maxCost: activeFeedback.maxCost }),
+        body: JSON.stringify({ city: requestCity, moods: myStates, partnerMood: hasRelationship ? choices.taMood : undefined, vibe: choices.vibe, time: choices.time, budget: choices.budget, space: choices.space, special: choices.special.trim(), district: requestLocation.district, districtSource: requestLocation.districtSource, radius: requestLocation.radius, longitude: requestLocation.longitude, latitude: requestLocation.latitude, excludePlaceIds: refreshPool ? [...new Set([...seenPlaceIds, ...activeFeedback.placeIds])].slice(-60) : [], excludeCategories: refreshPool ? activeFeedback.categories : [], excludeBrands: refreshPool ? activeFeedback.brands.slice(-60) : [], maxDistance: activeFeedback.maxDistance, maxCost: activeFeedback.maxCost }),
         signal: controller.signal,
       });
       const data = await response.json() as { plans?: GeneratedPlanResponse[]; morePlans?: GeneratedPlanResponse[]; weather?: WeatherForecast | null; pool?: CandidatePool; error?: string; code?: string };
       if (controller.signal.aborted) return;
-      if (["AI_NOT_CONFIGURED", "GENERATION_FAILED", "AI_CIRCUIT_OPEN"].includes(data.code ?? "")) {
-        throw new Error(refreshPool ? "暂时无法补充新方案，已保留你的反馈。可稍后重试或返回修改条件。" : "暂时无法生成符合条件的方案。请稍后重试或返回修改条件。");
+      if (data.code === "NO_MATCHING_PLACES") {
+        setCandidatePool(data.pool ?? null);
+        const message = refreshPool ? "没有更多符合当前条件与反馈的新地点。已保留原方案和反馈。" : "暂时没有找到符合当前条件的真实地点。已保留全部选择。";
+        setGenerationError(message); setLoadingFailed(true);
+        reportServiceIssue("location", "暂时没有找到合适的真实地点", `${message} 可以重新搜索，或返回调整商圈与搜索范围。`);
+        return;
       }
-      if (!response.ok || !data.plans) throw new Error(data.error || "灵感暂时没有生成成功。");
-      if (data.weather && data.weather.queryCity === inspirationCity) { weatherRequest.current += 1; setWeather(data.weather); }
+      if (["RATE_LIMITED", "DAILY_LIMITED", "AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "GENERATION_FAILED", "AI_CIRCUIT_OPEN"].includes(data.code ?? "") || !response.ok || !data.plans) {
+        const title = data.code === "RATE_LIMITED" ? "请求有点频繁" : data.code === "DAILY_LIMITED" ? "今天的 AI 灵感次数已用完" : "灵感没有生成成功";
+        const message = data.code === "RATE_LIMITED" ? "请稍等片刻后再试，已保留全部条件。" : data.code === "DAILY_LIMITED" ? "已保留全部条件，可以明天继续生成。" : refreshPool ? "暂时无法补充新方案，已保留原方案和反馈。可稍后重试或返回修改条件。" : data.error || "暂时无法生成符合条件的方案。已保留全部选择。";
+        setGenerationError(message); setLoadingFailed(true); reportServiceIssue("ai", title, message); return;
+      }
+      if (data.weather && data.weather.queryCity === requestCity) { weatherRequest.current += 1; setWeather(data.weather); clearServiceIssue("weather"); }
       setCandidatePool(data.pool ?? null);
       const fallback = data.code === "REAL_PLACE_FALLBACK";
       const freshPlans = [...data.plans.map((plan, index) => toPlan(plan, index, choices.time, choices.budget, fallback)), ...(data.morePlans ?? []).map((plan, index) => toPlan(plan, index + 3, choices.time, choices.budget, true))];
@@ -654,11 +719,12 @@ export default function Home() {
       setMorePlans(eligible.slice(3));
       const displayedPlaceIds = displayedPlans.flatMap(plan => recommendationPlaces(plan).map(place => place.id));
       setSeenPlaceIds(current => [...new Set([...(refreshPool ? current : []), ...displayedPlaceIds])]);
-      setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); setHasGenerated(true); go("results");
+      setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); setHasGenerated(true); clearServiceIssue("ai"); clearServiceIssue("location"); go("results");
       if (data.code === "REAL_PLACE_FALLBACK") notify("AI 暂时繁忙，已根据真实地点生成可执行方案");
     } catch (error) {
       if (controller.signal.aborted) return;
-      setGenerationError(error instanceof Error ? error.message : "灵感暂时没有生成成功。");
+      const message = error instanceof Error ? error.message : "灵感暂时没有生成成功。";
+      setGenerationError(message); reportServiceIssue("ai", "灵感没有生成成功", `${message} 已保留全部条件，可以直接重试。`);
       setLoadingFailed(true);
     } finally {
       if (requestController.current === controller) requestController.current = null;
@@ -849,7 +915,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const refreshAccount = () => { if (document.visibilityState === "visible") { void loadAccount(true); void loadSharedSchedule(true, true); void loadSharedExperiences(true); } };
+    const refreshAccount = () => { if (document.visibilityState === "visible") { void loadAccount(true); void refreshSharedData(true); } };
     window.addEventListener("focus", refreshAccount);
     document.addEventListener("visibilitychange", refreshAccount);
     return () => {
@@ -857,19 +923,18 @@ export default function Home() {
       document.removeEventListener("visibilitychange", refreshAccount);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [account?.authenticated, account?.relationship?.id]);
 
   useEffect(() => {
     if (!account?.authenticated) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadSharedSchedule(true);
-    void loadSharedExperiences(true); void loadMemories(true);
+    void refreshSharedData(false); void loadMemories(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account?.authenticated, account?.relationship?.id]);
 
   useEffect(() => {
     if (screen !== "calendar" || !account?.authenticated || !account.relationship?.id) return;
-    const refreshSharedCalendar = () => { void loadSharedSchedule(true, true); void loadSharedExperiences(true); };
+    const refreshSharedCalendar = () => { void refreshSharedData(true); };
     const timer = window.setInterval(refreshSharedCalendar, 5000);
     return () => window.clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1052,24 +1117,28 @@ export default function Home() {
   );
 
   const memoryCoverUrl = currentMemory?.mediaUrl ?? currentMemory?.partnerContribution?.mediaUrl ?? null;
+  const showSyncIssue = Boolean(serviceIssues.sync && account?.authenticated && ["home", "calendar", "schedule", "important", "task"].includes(screen));
+  const weatherIssueNotice = (city: string) => serviceIssues.weather ? <ServiceIssueCard issue={serviceIssues.weather} retryLabel="重新获取天气" onRetry={() => void loadWeather(city, false, true)}/> : null;
+  const loadingIssue = serviceIssues.location ?? serviceIssues.ai ?? { source: "ai" as const, title: "灵感没有生成成功", detail: generationError || "已保留全部条件，可以直接重试。" };
 
   return (
     <main className="prototype-shell" id="main-content">
       <aside className="prototype-notes">
         <div className="brand-mark">日</div>
-        <p className="kicker">恋爱日记 · V54 单人与共同体验</p>
+        <p className="kicker">恋爱日记 · V55 单人与共同体验</p>
         <h1>把一起生活的<br/>小事，好好留下。</h1>
         <p className="intro">从一个轻松的约会灵感开始，经过双方确认，成为共同安排，最后自然沉淀为回忆。</p>
         <ol className="journey" aria-label="体验流程">
           {["相遇", "我们", "灵感", "计划", "安排", "日历", "回忆"].map((label, i) => <li key={label} className={step >= i + 1 ? "done" : ""} aria-current={step === i + 1 ? "step" : undefined}><i aria-hidden="true">{step > i + 1 ? "✓" : i + 1}</i><span>{label}</span></li>)}
         </ol>
-        <p className="hint">V54 单人内容默认私密；共同任务和重要日子必须由双方确认。</p>
+        <p className="hint">V55 关键服务失败时保留条件与内容，并提供明确的恢复入口。</p>
       </aside>
 
       <section className="phone-stage">
         <div className="phone">
           <div className="statusbar" aria-hidden="true"><span>{clock}</span><span className="island"/><span>● ◒ ▰</span></div>
           <div className={`screen screen-${screen} ${hasRelationship?"":"solo-mode"}`}>
+            {showSyncIssue&&<div className="service-issue-wrap"><ServiceIssueCard issue={serviceIssues.sync!} retryLabel="立即同步" busy={syncBusy} onRetry={() => void refreshSharedData(true, true)}/></div>}
             {screen === "welcome" && (
               <div className="welcome page-full">
                 <div className="soft-orb orb-one"/><div className="soft-orb orb-two"/>
@@ -1127,7 +1196,8 @@ export default function Home() {
                 <header><button className="location-button" onClick={() => setPanel("cityEdit")} aria-label={`切换城市，当前为${inspirationCity}`}>{inspirationCity}⌄</button><span className="header-title">找灵感</span><button className="text-button" onClick={() => {setMyStates(["想放松"]);setChoices({ mood:"想放松",taMood:"和我一样",vibe:"安静",time:"今晚",budget:"¥100–300",space:"都可以",special:"" });}}>重置条件</button></header>
                 {taskContextActive && <div className="context-banner"><span>本次灵感目标</span><b>为「交换一首最近常听的歌」找灵感</b><button onClick={() => setTaskContextActive(false)} aria-label="移除共同任务灵感目标">×</button></div>}
                 <div className="form-intro"><p className="kicker">{hasRelationship?"此刻的你们":"此刻的我"}</p><h2>{hasRelationship?<>今天想和 TA<br/>怎么度过？</>:<>今天想<br/>怎么度过？</>}</h2><p>不用先想好具体活动，选几个此刻最在意的条件就好。</p></div>
-                <section className="nearby-settings" aria-labelledby="nearby-title"><div className="nearby-heading"><div><p className="kicker">从哪里出发</p><h3 id="nearby-title">优先推荐附近地点</h3></div><button type="button" onClick={useCurrentLocation} disabled={isLocating} aria-describedby="location-status">⌖ {isLocating ? "正在定位…" : "使用当前位置"}</button></div><p id="location-status" className="location-status" aria-live="polite">{locationPrefs.label}</p><label>商圈或区域（可选）<input name="business-district" autoComplete="address-level3" value={locationPrefs.district} onChange={event=>{const district=event.target.value;setLocationPrefs({...locationPrefs,district,districtSource:district.trim()?"manual":"none"});}} maxLength={40} placeholder={locationPrefs.longitude === null ? "定位后自动填写，也可以手动输入" : "未识别到商圈，请手动输入"}/><small className="field-help">{locationPrefs.districtSource==="manual"?(locationPrefs.longitude===null?"已按手动商圈搜索；未定位时无法校验距离范围。":`已按手动商圈优先搜索，并限制在当前位置 ${locationPrefs.radius/1000} 公里内。`):"定位变化后会自动更新；自动结果也可以继续修改。"}</small></label><fieldset className="radius-choice"><legend>地点搜索范围</legend>{[[3000,"3 公里"],[5000,"5 公里"],[10000,"10 公里"]] .map(([radius,label])=><button type="button" key={radius} className={locationPrefs.radius===radius?"active":""} aria-pressed={locationPrefs.radius===radius} onClick={()=>setLocationPrefs({...locationPrefs,radius:Number(radius)})}>{label}</button>)}</fieldset><small>定位只用于本次附近搜索，不保存在共同资料中；也可以拒绝定位并手动填写商圈。</small></section>
+                <section className="nearby-settings" aria-labelledby="nearby-title"><div className="nearby-heading"><div><p className="kicker">从哪里出发</p><h3 id="nearby-title">优先推荐附近地点</h3></div><button type="button" onClick={useCurrentLocation} disabled={isLocating} aria-describedby="location-status">⌖ {isLocating ? "正在定位…" : "使用当前位置"}</button></div><p id="location-status" className="location-status" aria-live="polite">{locationPrefs.label}</p><label>商圈或区域（可选）<input ref={districtInputRef} name="business-district" autoComplete="address-level3" value={locationPrefs.district} onChange={event=>{const district=event.target.value;setLocationPrefs({...locationPrefs,district,districtSource:district.trim()?"manual":"none"});if(district.trim())clearServiceIssue("location");}} maxLength={40} placeholder={locationPrefs.longitude === null ? "定位后自动填写，也可以手动输入" : "未识别到商圈，请手动输入"}/><small className="field-help">{locationPrefs.districtSource==="manual"?(locationPrefs.longitude===null?"已按手动商圈搜索；未定位时无法校验距离范围。":`已按手动商圈优先搜索，并限制在当前位置 ${locationPrefs.radius/1000} 公里内。`):"定位变化后会自动更新；自动结果也可以继续修改。"}</small></label><fieldset className="radius-choice"><legend>地点搜索范围</legend>{[[3000,"3 公里"],[5000,"5 公里"],[10000,"10 公里"]] .map(([radius,label])=><button type="button" key={radius} className={locationPrefs.radius===radius?"active":""} aria-pressed={locationPrefs.radius===radius} onClick={()=>setLocationPrefs({...locationPrefs,radius:Number(radius)})}>{label}</button>)}</fieldset><small>定位只用于本次附近搜索，不保存在共同资料中；也可以拒绝定位并手动填写商圈。</small></section>
+                {serviceIssues.location&&<ServiceIssueCard issue={serviceIssues.location} retryLabel="重新定位" onRetry={useCurrentLocation} secondaryLabel="手动填写商圈" onSecondary={()=>districtInputRef.current?.focus()}/>}
                 <MultiChoice title="我的状态（最多选2项）" options={["想放松", "有点累", "想热闹", "想尝鲜", "想认真聊聊", ...customStates]} values={myStates} setValues={(values)=>{setMyStates(values);setChoices({...choices,mood:values[0]??"想放松"});}}/>
                 <div className="custom-state-editor"><label htmlFor="custom-state">没有合适的状态？</label><div><input id="custom-state" aria-label="自定义状态" name="custom-state" autoComplete="off" value={newState} onChange={e=>setNewState(e.target.value)} maxLength={10} placeholder="例如：刚加完班…"/><button onClick={()=>{const value=newState.trim();if(!value)return;if(!customStates.includes(value))setCustomStates([...customStates,value]);setNewState("");notify("已加入自定义状态，可立即选择");}}>＋ 添加</button></div>{customStates.length>0&&<p>自定义状态可重复使用；点击右侧删除： {customStates.map(state=><button key={state} onClick={()=>{setCustomStates(customStates.filter(x=>x!==state));setMyStates(myStates.filter(x=>x!==state));}}>{state} ×</button>)}</p>}</div>
                 {hasRelationship&&<Choice title="TA 呢？" options={["和我一样", "想放松", "想热闹", "不知道"]} value={choices.taMood} setValue={(taMood) => setChoices({...choices,taMood})}/>}
@@ -1142,7 +1212,7 @@ export default function Home() {
             )}
 
             {screen === "loading" && (
-              <div className="page loading-page"><header><Back onClick={() => back("inspire")}/><span>正在寻找灵感</span><i aria-hidden="true"/></header>{loadingFailed ? <div className="error-state"><div className="state-symbol" aria-hidden="true">↻</div><p className="kicker">暂时走神了</p><h2>灵感没有生成成功</h2><p>{generationError || "网络有一点拥挤，你刚才选择的条件都还在，不需要重新填写。"}</p><button className="primary-button" onClick={() => generate(false, generationRefresh.current)}>再试一次 <Arrow/></button><button className="ghost-button" onClick={() => go("inspire")}>返回修改条件</button></div> : <div className="ai-loading" role="status" aria-live="polite"><div className="loading-orbit" aria-hidden="true"><span>✦</span></div><p className="kicker">{hasRelationship?"读懂你们此刻的心情":"读懂你此刻的心情"}</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配{hasRelationship?"你们":"你的"}状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>正在核验地点并生成内容，可能需要约一分钟；返回可保留已选条件。</p></div>}</div>
+              <div className="page loading-page"><header><Back onClick={() => back("inspire")}/><span>正在寻找灵感</span><i aria-hidden="true"/></header>{loadingFailed ? <div className="error-state"><ServiceIssueCard variant="blocking" issue={loadingIssue} retryLabel={loadingIssue.source==="location"&&locationPrefs.radius<10000?"扩大到 10 公里重试":"再试一次"} onRetry={()=>{if(loadingIssue.source==="location"&&locationPrefs.radius<10000){const next={...locationPrefs,radius:10000};setLocationPrefs(next);void generate(false,generationRefresh.current,recommendationFeedback,next);}else void generate(false,generationRefresh.current);}} secondaryLabel="调整商圈与条件" onSecondary={()=>go("inspire")}/></div> : <div className="ai-loading" role="status" aria-live="polite"><div className="loading-orbit" aria-hidden="true"><span>✦</span></div><p className="kicker">{hasRelationship?"读懂你们此刻的心情":"读懂你此刻的心情"}</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配{hasRelationship?"你们":"你的"}状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>正在核验地点并生成内容，可能需要约一分钟；返回可保留已选条件。</p></div>}</div>
             )}
 
             {["results", "plan", "location", "confirm"].includes(screen) && !aiPlans && <div className="page formal-page"><header><Back onClick={() => go("inspire")}/><span>灵感参考</span><i aria-hidden="true"/></header><section className="empty-formal"><span>✦</span><h2>本次灵感尚未生成或已失效</h2><p>已保存的安排仍在日历中。当前版本尚未保存完整灵感路线，不会使用演示内容替代。</p><button className="primary-button" onClick={() => go("inspire")}>返回灵感条件 <Arrow/></button></section></div>}
@@ -1151,6 +1221,7 @@ export default function Home() {
               <div className="page result-page">
                 <header><Back onClick={() => back("inspire")}/><span>{hasRelationship?"为你们想到的":"为你想到的"}</span><button className="text-button" onClick={() => go("inspire")}>调整条件</button></header>
                 <div className="result-intro"><p className="kicker">{inspirationCity} · {choices.time} · {choices.mood} · {locationPrefs.longitude===null?"商圈搜索 · 距离待定位":`搜索范围 ${locationPrefs.radius/1000} km`}</p><h2>{choices.space === "室内" ? <>留在室内，<br/>也能认真约会。</> : <>不赶时间，<br/>也不辜负今晚。</>}</h2>{inspirationWeather&&<p className="weather-summary">高德天气 · {inspirationWeather.date} · {weatherLabel(inspirationWeather)}</p>}{candidatePool&&candidatePool.candidateCount>0&&<p className="candidate-pool-summary">已从高德返回的 {candidatePool.rawCount} 条结果中，筛出 {candidatePool.candidateCount} 个供进一步核对的候选地点</p>}</div>
+                {weatherIssueNotice(inspirationCity)}
                 <div className="result-pool-actions"><span>{eligibleMorePlans.length>0?`本批还有 ${eligibleMorePlans.length} 个未展示方案`:"本批候选已接近看完"}</span><button type="button" onClick={replacePlanBatch}>换一批</button></div>
                 <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => setSelectedPlan(0)}><div className="plan-top"><span>主灵感 · {aiPlans ? "真实地点组合" : "演示方案"}</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · 预算偏好 {choices.budget} · {choices.space}</p><b className="plan-introduction-label">方案简介</b><p>{dynamicPlans[0].desc}</p>{dynamicPlans[0].places?.[0]&&<span className="place-preview"><b>真实地点</b>{dynamicPlans[0].includedPlaces?.map(place=>place.name).join(" + ")||dynamicPlans[0].places[0].name} · {placeDistance(dynamicPlans[0].places[0])}</span>}<span className="plan-cost">{planBudgetText(dynamicPlans[0],choices.budget,hasRelationship)} · {planDistanceText(dynamicPlans[0],locationPrefs.radius)}</span>{choices.special.trim()&&<span className="prep-note">特别照顾：{choices.special.trim()}</span>}</button><div className="alternative-title"><b>也可以试试</b><button type="button" onClick={() => replaceSelectedPlan()}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => setSelectedPlan(i)}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p>{plan.places?.[0]&&<p className="alternative-place">{plan.includedPlaces?.map(place=>place.name).join(" + ")||plan.places[0].name} · {placeDistance(plan.places[0])}</p>}<small className="alternative-cost">{planBudgetText(plan,choices.budget,hasRelationship)}</small></div><i aria-hidden="true">›</i></button>})}</div>
                 <section className="plan-feedback" aria-labelledby="plan-feedback-title"><div><b id="plan-feedback-title">这条灵感不合适？</b><small>选择原因后会立即更换，本次浏览不再推荐相同地点或品牌。</small></div><div>{(["太远","太贵","太普通","不符合状态","地点不合适"] as FeedbackReason[]).map(reason=><button type="button" key={reason} onClick={()=>dislikeCurrentPlan(reason)}>{reason}</button>)}</div></section>
@@ -1168,6 +1239,7 @@ export default function Home() {
                 {currentPlace&&<section className="recommendation-reasons"><p className="kicker">为什么推荐这里</p><h3>{currentPlace.name}</h3><div>{currentPlace.recommendationReasons.map(reason=><span key={reason}>✓ {reason}</span>)}</div><small>评分、价格与营业信息来自高德；可能随时变化，请在出发前复查。</small></section>}
                 {(currentPlan.includedPlaces?.length??0)>1&&<section className="included-places"><p className="kicker">方案包含</p>{currentPlan.includedPlaces?.map((place,index)=><div key={place.id}><span>{index+1}</span><b>{place.name}</b><small>{placeDistance(place)}</small></div>)}</section>}
                 <section className="execution-info"><p className="kicker">执行信息</p><div><span>地点</span><b>{currentPlace ? (viewingSavedRoute?"已保存地点参考":"高德地图已匹配") : "AI 建议 · 尚未核验"}</b></div><div><span>范围</span><b>{planDistanceText(currentPlan,locationPrefs.radius)}</b></div><div><span>交通</span><b>打开高德地图后查看实时路线</b></div><div><span>天气</span><b>{inspirationWeather?`${weatherLabel(inspirationWeather)} · 高德天气`:choices.time==="暂不确定"?"时间确定后显示预报":"当前时间不在高德 4 天预报内"}</b></div><div><span>预算</span><b>{currentBudgetText}</b></div></section>
+                {weatherIssueNotice(inspirationCity)}
                 <section className="warm-note"><span>♡</span><p><b>一个小提示</b><br/>{hasRelationship?"把手机收起来十分钟，问问对方：最近有什么小事让你开心？":"给自己留十分钟，不赶时间地感受今天。"}</p></section>
                 <div className="sticky-cta"><button className="primary-button" onClick={() => {setScheduleDraft(draft => ({...draft, title: currentPlan.title, city: inspirationCity, date: inspirationWeather?.date ?? draft.date}));go("confirm");}}>采用这个安排 <Arrow /></button><p>下一步确认日期与时间；确认前不会进入日历</p></div>
               </div>
@@ -1175,7 +1247,7 @@ export default function Home() {
 
             {screen === "location" && aiPlans && <div className="page formal-page location-page"><header><Back onClick={() => back("plan")}/><span>地点详情</span>{currentPlace ? <a className="icon-button" href={amapMapUrl} target="_blank" rel="noreferrer" aria-label="在高德地图中打开地点">↗</a> : <button className="icon-button" onClick={() => notify("本方案尚未匹配到真实地点")} aria-label="地点尚未匹配">↗</button>}</header><div className={`place-photo ${placeVersion ? "alternate" : ""}`}><span>{currentPlace ? (viewingSavedRoute?"安排中保存的地点参考":"高德地图地点数据") : "AI 地点建议 · 未核验"}</span></div><section className="place-title"><p className="kicker">{currentPlace ? (viewingSavedRoute?"保存时的地点 · 请重新核实":"真实地点已匹配 · 营业信息请出发前确认") : "尚未匹配到真实地点"}</p><h2>{currentPlace?.name || currentPlan.title}</h2><p>{currentPlace?.address || `请在${inspirationCity}重新生成或更换搜索条件`}</p></section><section className="info-group"><InfoRow label="计划时段" value="以最终安排为准"/><InfoRow label="地点类型" value={currentPlace?.type || "AI 建议"}/><InfoRow label="坐标" value={currentPlace?.location || "尚未获取"}/><InfoRow label="营业时间" value="高德地点搜索未提供，需另行确认"/><InfoRow label="地点来源" value={currentPlace ? (viewingSavedRoute?"采用安排时保存的快照":"高德地图 Web 服务") : "AIHubMix 建议"}/></section><PlaceCandidates places={currentPlaceCandidates} selectedId={currentPlace?.id} saved={viewingSavedRoute} onSelect={(index)=>{setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?index:value));setPlaceVersion(index);}}/><section className="place-notice"><b>执行提示</b><p>{currentPlace ? (viewingSavedRoute?"这是采用安排时保存的地点参考，不能证明当前营业、价格或距离；请在地图中重新确认。":"地点名称、地址和坐标来自高德地图；营业状态、排队情况与价格可能变化，请出发前确认。") : "AI 不会编造具体商家。重新生成后，系统会尝试用高德地图匹配真实地点。"}</p></section>{currentPlace ? <a className="primary-button map-link" href={amapMapUrl} target="_blank" rel="noreferrer">在高德地图中查看 <Arrow/></a> : <button className="primary-button" onClick={() => {go("inspire");notify("请调整关键词后重新生成");}}>返回调整条件 <Arrow/></button>}<button className="ghost-button" disabled={dynamicPlans.length < 2} onClick={() => {setSelectedPlan((selectedPlan+1)%dynamicPlans.length);go("plan");}}>查看另一个方案</button></div>}
 
-            {screen === "confirm" && aiPlans && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>{hasRelationship?"确认安排":"保存我的计划"}</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>{hasRelationship?<>发给 TA，<br/>一起决定。</>:<>先为自己，<br/>保存这个计划。</>}</h2><p className="confirm-copy">{hasRelationship?"你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”。":"计划默认仅自己可见；以后邀请 TA 时，也不会自动共享。"}</p></section><section className="confirm-card"><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>{setScheduleDraft({...scheduleDraft,title:e.target.value});setFormError("");}}/></label><label>日期<input required name="schedule-date" type="date" autoComplete="off" value={scheduleDraft.date} onChange={e=>{setScheduleDraft({...scheduleDraft,date:e.target.value});setFormError("");}}/></label><label>开始时间<input required name="schedule-time" type="time" autoComplete="off" value={scheduleDraft.time} onInput={e=>{const time=e.currentTarget.value;setScheduleDraft(current=>({...current,time}));setFormError("");}}/></label><label>所在城市<input required name="schedule-city" autoComplete="address-level2" value={scheduleDraft.city || profile.city} onChange={e=>{setScheduleDraft({...scheduleDraft,city:e.target.value});setFormError("");}}/></label></section>{scheduleWeather&&weather&&<WeatherNotice day={scheduleWeather} reportTime={weather.reportTime}/>} {formError&&<p className="field-error" role="alert">{formError}</p>}{taskContextActive && <section className="link-context"><span>♫</span><div><b>关联共同任务</b><p>交换一首最近常听的歌</p></div><em>安排确认后关联</em></section>}<button className="primary-button" disabled={scheduleBusy} onClick={()=>hasRelationship?void createSharedSchedule():void savePersonalPlan()}>{scheduleBusy?"正在保存…":hasRelationship?"发给 TA 确认":"保存到我的计划"} <Arrow/></button>{!hasRelationship&&<button className="ghost-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定</button>}<button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
+            {screen === "confirm" && aiPlans && <div className="page formal-page confirm-page"><header><Back onClick={() => back("plan")}/><span>{hasRelationship?"确认安排":"保存我的计划"}</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">最后确认一次</p><h2>{hasRelationship?<>发给 TA，<br/>一起决定。</>:<>先为自己，<br/>保存这个计划。</>}</h2><p className="confirm-copy">{hasRelationship?"你确认后将发出共同安排邀请；TA 接受前它会显示为“待确认”。":"计划默认仅自己可见；以后邀请 TA 时，也不会自动共享。"}</p></section><section className="confirm-card"><label>安排名称<input required name="schedule-title" autoComplete="off" value={scheduleDraft.title || currentPlan.title} onChange={e=>{setScheduleDraft({...scheduleDraft,title:e.target.value});setFormError("");}}/></label><label>日期<input required name="schedule-date" type="date" autoComplete="off" value={scheduleDraft.date} onChange={e=>{setScheduleDraft({...scheduleDraft,date:e.target.value});setFormError("");}}/></label><label>开始时间<input required name="schedule-time" type="time" autoComplete="off" value={scheduleDraft.time} onInput={e=>{const time=e.currentTarget.value;setScheduleDraft(current=>({...current,time}));setFormError("");}}/></label><label>所在城市<input required name="schedule-city" autoComplete="address-level2" value={scheduleDraft.city || profile.city} onChange={e=>{setScheduleDraft({...scheduleDraft,city:e.target.value});setFormError("");}}/></label></section>{scheduleWeather&&weather&&<WeatherNotice day={scheduleWeather} reportTime={weather.reportTime}/>} {weatherIssueNotice(scheduleDraft.city || profile.city)} {formError&&<p className="field-error" role="alert">{formError}</p>}{taskContextActive && <section className="link-context"><span>♫</span><div><b>关联共同任务</b><p>交换一首最近常听的歌</p></div><em>安排确认后关联</em></section>}<button className="primary-button" disabled={scheduleBusy} onClick={()=>hasRelationship?void createSharedSchedule():void savePersonalPlan()}>{scheduleBusy?"正在保存…":hasRelationship?"发给 TA 确认":"保存到我的计划"} <Arrow/></button>{!hasRelationship&&<button className="ghost-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定</button>}<button className="ghost-button" onClick={() => back("plan")}>返回继续查看</button></div>}
 
             {screen === "schedule" && !scheduleLoaded && (
               <div className="page formal-page schedule-page">
@@ -1198,6 +1270,7 @@ export default function Home() {
                 <div className={`confirmation ${cancelled ? "is-cancelled" : ""} ${scheduleIsShared&&!partnerAccepted&&!cancelled?"is-pending":""}`}><span>{cancelled ? "×" : scheduleIsShared&&!partnerAccepted ? "◷" : "✓"}</span><p>{cancelled ? "安排已取消" : scheduleCompleted ? (scheduleIsShared?"双方已确认完成":"已确认完成") : !scheduleIsShared ? "我的计划 · 仅自己可见" : !partnerAccepted ? "等待 TA 接受" : scheduleCompletionPending ? "等待另一位参与者确认完成" : "双方已接受 · 正式安排"}</p></div>
                 <div className="schedule-title"><p className="kicker">{eventDateLong}</p><h2>{scheduleDraft.title || currentPlan.title}</h2><p>{scheduleDraft.time} · {scheduleDraft.city || profile.city}</p></div>
                 <section className="schedule-card"><div><span className="label">时间</span><b>{eventMonthDay} {scheduleDraft.time}</b></div><div><span className="label">集合</span><b>{scheduledFacts?.places[0]?.name||"尚未确认，请出发前核实"}</b></div><div><span className="label">天气</span><b>{scheduleWeather?weatherLabel(scheduleWeather):"仅显示未来 4 天预报"}</b></div><div><span className="label">预算</span><b>{scheduledFacts?.priceNote||"以确认安排时为准"}</b></div><button onClick={viewSavedRoute}>{canViewScheduledInspiration ? "查看已保存的路线" : "旧安排没有保存路线"} <span>›</span></button></section>
+                {weatherIssueNotice(scheduleDraft.city || profile.city)}
                 {!cancelled&&(!scheduleIsShared||partnerAccepted)&&<section className="share-control"><div><b>对外分享</b><p>只包含已确认的名称、日期、时间和城市，7 天后自动失效。</p></div>{publicShareLink?<><a href={publicShareLink.path} target="_blank" rel="noreferrer">查看公开页</a><button disabled={shareBusy} onClick={()=>void copyPublicShareLink()}>复制链接</button><button className="danger-text" disabled={shareBusy} onClick={()=>void revokePublicShareLink()}>立即撤回</button></>:<button disabled={shareBusy} onClick={()=>void createPublicShareLink()}>{shareBusy?"正在创建…":"创建分享链接"}</button>}</section>}
                 {taskLinked && <button className="linked-task" onClick={() => go("task")}><span>♫</span><div><small>关联情侣任务</small><b>交换一首最近常听的歌</b></div><i aria-hidden="true">›</i></button>}
                 {!scheduleIsShared ? <div className="schedule-actions confirm-wait">{scheduleCompleted?<><div className="recorded-note"><b>这次经历已记录 ♡</b><p>基础回忆只保存已确认的安排事实。</p></div><button className="primary-button" onClick={()=>void openMemoryForSchedule()}>查看回忆 <Arrow/></button></>:!canConfirmCompletion?<div className="wait-card"><span>◷</span><div><b>等待出发</b><p>到达安排开始时间后才能确认完成</p></div></div>:<button className="primary-button" disabled={scheduleBusy} onClick={()=>void updateScheduleCompletion("request_complete")}>{scheduleBusy?"正在确认…":"确认已完成"} <Arrow/></button>}{!scheduleCompleted&&<>{hasRelationship?<button className="ghost-button" disabled={scheduleBusy} onClick={()=>void sharePersonalPlan()}>发给 TA 一起决定</button>:<button className="ghost-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起决定</button>}<button className="ghost-button danger-text" onClick={()=>setPanel("cancel")}>删除这个计划</button></>}</div> : <><div className="people-row"><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{scheduleCompleted?"双方已确认完成":scheduleCompletionPending?(scheduleCompletionRequesterIsMe?"你已确认完成":"TA 已确认完成"):!partnerAccepted?(isScheduleCreator?"你已发出邀请":"TA 已发出邀请"):"双方已经接受"}</b><p>{scheduleCompleted?"双方的基础回忆已分别保存":scheduleCompletionPending?(scheduleCompletionRequesterIsMe?"正在等待 TA 确认":"等待你的独立确认"):!partnerAccepted?(isScheduleCreator?"等待 TA 接受":"接受后进入共同日历"):"安排已进入双方共同日历"}</p></div><div className="avatar b">{partnerProfile.name.slice(0,1)}</div></div>{!partnerAccepted?<div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>{isScheduleCreator?"等待 TA 接受":"TA 发来一项共同安排"}</b><p>接受后才会成为正式共同安排</p></div></div>{!isScheduleCreator&&<button className="primary-button" disabled={scheduleBusy} onClick={()=>void acceptSharedSchedule()}>{scheduleBusy?"正在同步…":"接受这个安排"} <Arrow/></button>}</div>:scheduleCompleted?<div className="schedule-actions"><div className="recorded-note"><b>这次经历已记录 ♡</b><p>各自的文字和照片仍由各自管理。</p></div><button className="primary-button" onClick={()=>void openMemoryForSchedule()}>查看我的回忆 <Arrow/></button></div>:!canConfirmCompletion?<div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>等待一起出发</b><p>到达安排开始时间后，双方才能确认完成</p></div></div><button className="ghost-button danger-text" onClick={()=>setPanel("cancel")}>取消这个安排</button></div>:scheduleCompletionPending?<div className="schedule-actions confirm-wait"><div className="wait-card"><span>◷</span><div><b>{scheduleCompletionRequesterIsMe?"等待 TA 确认完成":"TA 已确认完成"}</b><p>两位不同的参与者确认后才生成基础回忆</p></div></div>{!scheduleCompletionRequesterIsMe&&<button className="primary-button" disabled={scheduleBusy} onClick={()=>void updateScheduleCompletion("confirm_complete")}>{scheduleBusy?"正在确认…":"确认双方已完成"} <Arrow/></button>}</div>:<div className="schedule-actions"><button className="primary-button" disabled={scheduleBusy} onClick={()=>void updateScheduleCompletion("request_complete")}>{scheduleBusy?"正在确认…":"我已完成"} <Arrow/></button><button className="ghost-button danger-text" onClick={()=>setPanel("cancel")}>取消这个安排</button></div>}</>}
@@ -1223,7 +1296,7 @@ export default function Home() {
                 <div className="legend"><span><i className="personal-dot"/>我的计划</span><span><i className="solid-dot"/>共同安排</span><span><i className="ring-dot"/>AI 灵感</span><span><i className="rest-swatch"/>法定休息</span><span><i className="work-swatch"/>调休上班</span></div>
                 {hasRelationship&&<p className="calendar-sync-note">共同安排与重要日子约 5 秒自动同步；个人计划仍仅自己可见。</p>}
                 {calendarYear===holidaySource.year?<a className="holiday-source" href={holidaySource.url} target="_blank" rel="noreferrer">2026 年节假日 · 国务院办公厅安排（2025-11-04 发布）</a>:<p className="holiday-source">当前年份显示固定日期节日与普通周末；官方放假、调休数据待年度通知发布后更新。</p>}
-                <section className="day-agenda"><p className="kicker">{calendarMonth+1}月{selectedDay}日</p>{calendarWeather&&weather&&<WeatherNotice day={calendarWeather} reportTime={weather.reportTime}/>} {(()=>{const dateKey=`${calendarYear}-${String(calendarMonth+1).padStart(2,"0")}-${String(selectedDay).padStart(2,"0")}`;const dayStatus=calendarDayStatus(dateKey);const daySchedules=schedules.filter(schedule=>schedule.event_date===dateKey);const dayImportantDays=importantDaysOnDate(dateKey);const festival=dayStatus.festivalName?<div className="festival-banner"><span aria-hidden="true">日</span><div><b>{dayStatus.festivalName}</b><small>{dayStatus.kind==="rest"?"法定休息日":dayStatus.kind==="adjusted-work"?"调休上班日":"节日提醒"}</small></div></div>:null;let content;if(daySchedules.length||dayImportantDays.length)content=<div className="agenda-list">{daySchedules.map(schedule=><button key={schedule.id} className={`agenda-item ${schedule.visibility==="personal"?"personal-agenda":""}`} onClick={()=>openSchedule(schedule)}><i aria-hidden="true"/><span><b>{schedule.event_time}</b><small>{schedule.visibility==="shared"?"共同安排":"我的计划"}</small></span><div><b>{schedule.title}</b><small>{schedule.status==="completed"?"已完成":schedule.visibility==="shared"?(["confirmed","completion_pending"].includes(schedule.status)?"双方已接受":"等待确认"):"仅自己可见"} · {schedule.city}</small></div><em aria-hidden="true">›</em></button>)}{dayImportantDays.map(day=><button key={day.id} className="agenda-item important-agenda" onClick={() => go("important")}><i aria-hidden="true"/><span><b>全天</b></span><div><b>{day.title}</b><small>{day.visibility==="personal"?"我的重要日子":day.status==="confirmed"?"共同重要日子":"等待 TA 确认"} · {day.repeat_rule==="yearly"?"每年重复":"不重复"}</small></div><em aria-hidden="true">›</em></button>)}</div>;else if(isIdeaMonth&&selectedDay===16&&hasGenerated)content=<div className="idea-day"><span aria-hidden="true">✦</span><div><b>AI 轻量建议</b><p>周日下午适合去城市周边走走，尚未成为正式安排。</p></div><button onClick={()=>go("inspire")}>继续规划</button></div>;else content=<div className="empty-day"><span aria-hidden="true">☼</span><p>这一天还没有{hasRelationship?"共同安排、个人计划或重要日子":"个人计划或重要日子"}</p><button onClick={() => go("inspire")}>找点灵感</button></div>;return <>{festival}{content}</>;})()}</section>
+                <section className="day-agenda"><p className="kicker">{calendarMonth+1}月{selectedDay}日</p>{calendarWeather&&weather&&<WeatherNotice day={calendarWeather} reportTime={weather.reportTime}/>} {weatherIssueNotice(scheduleDraft.city || profile.city)} {(()=>{const dateKey=`${calendarYear}-${String(calendarMonth+1).padStart(2,"0")}-${String(selectedDay).padStart(2,"0")}`;const dayStatus=calendarDayStatus(dateKey);const daySchedules=schedules.filter(schedule=>schedule.event_date===dateKey);const dayImportantDays=importantDaysOnDate(dateKey);const festival=dayStatus.festivalName?<div className="festival-banner"><span aria-hidden="true">日</span><div><b>{dayStatus.festivalName}</b><small>{dayStatus.kind==="rest"?"法定休息日":dayStatus.kind==="adjusted-work"?"调休上班日":"节日提醒"}</small></div></div>:null;let content;if(daySchedules.length||dayImportantDays.length)content=<div className="agenda-list">{daySchedules.map(schedule=><button key={schedule.id} className={`agenda-item ${schedule.visibility==="personal"?"personal-agenda":""}`} onClick={()=>openSchedule(schedule)}><i aria-hidden="true"/><span><b>{schedule.event_time}</b><small>{schedule.visibility==="shared"?"共同安排":"我的计划"}</small></span><div><b>{schedule.title}</b><small>{schedule.status==="completed"?"已完成":schedule.visibility==="shared"?(["confirmed","completion_pending"].includes(schedule.status)?"双方已接受":"等待确认"):"仅自己可见"} · {schedule.city}</small></div><em aria-hidden="true">›</em></button>)}{dayImportantDays.map(day=><button key={day.id} className="agenda-item important-agenda" onClick={() => go("important")}><i aria-hidden="true"/><span><b>全天</b></span><div><b>{day.title}</b><small>{day.visibility==="personal"?"我的重要日子":day.status==="confirmed"?"共同重要日子":"等待 TA 确认"} · {day.repeat_rule==="yearly"?"每年重复":"不重复"}</small></div><em aria-hidden="true">›</em></button>)}</div>;else if(isIdeaMonth&&selectedDay===16&&hasGenerated)content=<div className="idea-day"><span aria-hidden="true">✦</span><div><b>AI 轻量建议</b><p>周日下午适合去城市周边走走，尚未成为正式安排。</p></div><button onClick={()=>go("inspire")}>继续规划</button></div>;else content=<div className="empty-day"><span aria-hidden="true">☼</span><p>这一天还没有{hasRelationship?"共同安排、个人计划或重要日子":"个人计划或重要日子"}</p><button onClick={() => go("inspire")}>找点灵感</button></div>;return <>{festival}{content}</>;})()}</section>
                 {bottomNav("calendar")}
               </div>
             )}
@@ -1244,7 +1317,7 @@ export default function Home() {
 
             {screen === "taskHistory" && <div className="page formal-page"><header><Back onClick={() => back("home")}/><span>共同任务</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">当前任务</p><h2>偶尔想到一件，<br/>值得一起做的小事。</h2></section>{activeTask?<button className="task-history-current" onClick={() => go("task")}><span>♫</span><div><b>{activeTask.title}</b><small>{activeTask.status==="pending_partner"?"等待接受":activeTask.status==="completion_pending"?"等待完成确认":"进行中"}</small></div><i aria-hidden="true">›</i></button>:<div className="empty-inline"><span>○</span><p>当前没有进行中的共同任务</p></div>}<p className="month-title">历史任务</p>{tasks.filter(task=>["completed","cancelled"].includes(task.status)).length?tasks.filter(task=>["completed","cancelled"].includes(task.status)).map(task=><div className="history-row" key={task.id}><span>{task.status==="completed"?"✓":"↻"}</span><div><b>{task.title}</b><small>{task.status==="completed"?"双方已确认完成":"已结束"}</small></div></div>):<div className="empty-inline"><span>○</span><p>还没有已完成或已结束的任务</p></div>}</div>}
 
-            {screen === "settings" && <div className="page tab-page formal-page settings-page"><header><div><p className="kicker">恋爱日记</p><h2>设置</h2></div><i aria-hidden="true"/></header><button type="button" className="settings-profile" onClick={() => go("profile")}><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{profile.name}</b><small>{hasRelationship?`与${partnerProfile.name}已连接`:"单人体验中 · 内容仅自己可见"}</small></div><i aria-hidden="true">›</i></button><section className="settings-group"><SettingRow icon="♢" label={hasRelationship?"我们的资料":"我的资料"} onClick={() => go("profile")}/><SettingRow icon="◌" label={hasRelationship?"我们的重要日子":"我的重要日子"} onClick={() => go("important")}/>{!hasRelationship&&<SettingRow icon="♡" label="邀请 TA 一起使用" value="随时可以" onClick={() => {setOnboardingIntent("invite");go("connect");}}/>}</section><section className="settings-group">{hasRelationship&&<SettingRow icon="♡" label="关系与数据安全" value="可随时退出" onClick={() => go("relationshipSafety")}/>}<SettingRow icon="♢" label="通知与提醒" onClick={() => go("notifications")}/><SettingRow icon="◉" label="隐私与 AI 数据说明" onClick={() => go("privacy")}/><SettingRow icon="▢" label="照片与存储" onClick={() => go("storage")}/></section><section className="settings-group"><SettingRow icon="?" label="帮助与反馈" onClick={() => go("help")}/><SettingRow icon="○" label="关于恋爱日记" value="V54" onClick={() => go("about")}/></section>{bottomNav("settings")}</div>}
+            {screen === "settings" && <div className="page tab-page formal-page settings-page"><header><div><p className="kicker">恋爱日记</p><h2>设置</h2></div><i aria-hidden="true"/></header><button type="button" className="settings-profile" onClick={() => go("profile")}><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{profile.name}</b><small>{hasRelationship?`与${partnerProfile.name}已连接`:"单人体验中 · 内容仅自己可见"}</small></div><i aria-hidden="true">›</i></button><section className="settings-group"><SettingRow icon="♢" label={hasRelationship?"我们的资料":"我的资料"} onClick={() => go("profile")}/><SettingRow icon="◌" label={hasRelationship?"我们的重要日子":"我的重要日子"} onClick={() => go("important")}/>{!hasRelationship&&<SettingRow icon="♡" label="邀请 TA 一起使用" value="随时可以" onClick={() => {setOnboardingIntent("invite");go("connect");}}/>}</section><section className="settings-group">{hasRelationship&&<SettingRow icon="♡" label="关系与数据安全" value="可随时退出" onClick={() => go("relationshipSafety")}/>}<SettingRow icon="♢" label="通知与提醒" onClick={() => go("notifications")}/><SettingRow icon="◉" label="隐私与 AI 数据说明" onClick={() => go("privacy")}/><SettingRow icon="▢" label="照片与存储" onClick={() => go("storage")}/></section><section className="settings-group"><SettingRow icon="?" label="帮助与反馈" onClick={() => go("help")}/><SettingRow icon="○" label="关于恋爱日记" value="V55" onClick={() => go("about")}/></section>{bottomNav("settings")}</div>}
 
             {screen === "notifications" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>通知与提醒</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">只提醒重要的事</p><h2>不让{hasRelationship?"共同":"日常"}生活，<br/>变成通知压力。</h2></section><section className="settings-group">{hasRelationship&&<ToggleRow label="共同安排提醒" note="开始前与变更时提醒" value={preferences.scheduleReminders} disabled={preferencesBusy} onChange={value=>void updatePreference("scheduleReminders",value)}/>}<ToggleRow label="重要日子提醒" note={hasRelationship?"按双方设置的提前时间提醒":"按你设置的提前时间提醒"} value={preferences.importantDayReminders} disabled={preferencesBusy} onChange={value=>void updatePreference("importantDayReminders",value)}/>{hasRelationship&&<ToggleRow label="TA 的状态变化" note="接受安排、完成确认" value={preferences.partnerUpdates} disabled={preferencesBusy} onChange={value=>void updatePreference("partnerUpdates",value)}/>}</section><p className="policy-note">设置保存在你的账户中；不会发送连续签到、任务催促或关系评分通知。</p></div>}
 
@@ -1254,7 +1327,7 @@ export default function Home() {
 
             {screen === "help" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>帮助与反馈</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">先回答最常见的问题</p><h2>遇到问题，<br/>可以直接告诉我们。</h2></section><section className="help-list"><details><summary>为什么 AI 灵感不会自动进入日历？</summary><p>AI 只提供建议。只有你主动采用并确认日期、时间后，才会形成个人计划或共同安排。</p></details><details><summary>单人计划会自动分享给 TA 吗？</summary><p>不会。建立关系后仍需由你逐项选择是否发送给 TA。</p></details><details><summary>撤回照片后会发生什么？</summary><p>在线原文件会删除，当前关系成员不再能访问；平台无法删除对方此前保存的离线副本或截屏。</p></details></section><section className="feedback-form"><label>问题类型<select value={feedbackDraft.category} onChange={event=>setFeedbackDraft({...feedbackDraft,category:event.target.value})}><option>产品建议</option><option>功能异常</option><option>隐私与安全</option><option>其他</option></select></label><label>具体情况<textarea maxLength={1000} value={feedbackDraft.message} onChange={event=>setFeedbackDraft({...feedbackDraft,message:event.target.value})} placeholder="请描述发生了什么、你期待怎样改进"/></label><p>{feedbackDraft.message.length}/1000</p><button className="primary-button" disabled={feedbackBusy||!feedbackDraft.message.trim()} onClick={()=>void submitFeedback()}>{feedbackBusy?"正在提交…":"提交反馈"} <Arrow/></button></section></div>}
 
-            {screen === "about" && <div className="page formal-page about-page"><header><Back onClick={() => back("settings")}/><span>关于恋爱日记</span><i aria-hidden="true"/></header><div className="about-mark">♡</div><section className="page-intro compact"><p className="kicker">V54 · 完整安排与回忆</p><h2>让共同生活，<br/>更容易被认真对待。</h2><p className="confirm-copy">恋爱日记帮助两个人从灵感走到正式安排，再把真实发生的事自然留成回忆。AI 只提供建议，不替任何人确认事实或评价关系。</p></section><section className="info-group"><InfoRow label="当前版本" value="V54"/><InfoRow label="数据原则" value="个人所有 · 双方确认"/><InfoRow label="节假日数据" value="国务院办公厅年度通知"/></section><a className="secondary-button map-link" href={holidaySource.url} target="_blank" rel="noreferrer">查看 2026 年节假日来源 <Arrow/></a></div>}
+            {screen === "about" && <div className="page formal-page about-page"><header><Back onClick={() => back("settings")}/><span>关于恋爱日记</span><i aria-hidden="true"/></header><div className="about-mark">♡</div><section className="page-intro compact"><p className="kicker">V55 · 可恢复的真实体验</p><h2>让共同生活，<br/>更容易被认真对待。</h2><p className="confirm-copy">恋爱日记帮助两个人从灵感走到正式安排，再把真实发生的事自然留成回忆。AI 只提供建议，不替任何人确认事实或评价关系。</p></section><section className="info-group"><InfoRow label="当前版本" value="V55"/><InfoRow label="数据原则" value="个人所有 · 双方确认"/><InfoRow label="节假日数据" value="国务院办公厅年度通知"/></section><a className="secondary-button map-link" href={holidaySource.url} target="_blank" rel="noreferrer">查看 2026 年节假日来源 <Arrow/></a></div>}
 
             {screen === "relationshipSafety" && <div className="page formal-page safety-page"><header><Back onClick={() => back("settings")}/><span>关系与数据安全</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">离开不需要许可</p><h2>你的安全，<br/>不由对方决定。</h2><p className="confirm-copy">任何一方都能独立退出。共同空间解散可以协商，但不能阻止个人离开。</p></section><section className="safety-status"><span>✓</span><div><b>当前共享权限正常</b><p>照片、文字与 AI 衍生内容均记录来源和撤回状态。</p></div></section><section className="settings-group"><SettingRow icon="◎" label="查看我的内容与授权" value="照片与分享" onClick={()=>go("storage")}/><SettingRow icon="⇩" label="导出我的数据" value="不含 TA 已撤回内容" onClick={()=>void exportMyData()}/><SettingRow icon="!" label="举报骚扰或内容滥用" onClick={()=>setPanel("reportSafety")}/></section><section className="safety-explainer"><b>退出后保留什么？</b><p>你自己的内容和必要共同事实可形成只读归档；TA 撤回的内容会显示为占位说明。新关系永远不能访问旧关系数据。</p></section><button className="secondary-button" onClick={()=>setPanel("normalExit")}>退出当前关系</button><button className="danger-button safety-danger" onClick={()=>setPanel("safetyExit")}>立即退出并保护我的内容</button><p className="policy-note">安全退出会先撤销共享、下载和历史文件链接，再通知对方。</p></div>}
 
@@ -1304,6 +1377,9 @@ function placeDistance(place: Place) {
 
 function InfoRow({ label, value }: { label: string; value: string }) { return <div className="info-row"><span>{label}</span><b>{value}</b><i aria-hidden="true">›</i></div>; }
 function WeatherNotice({ day, reportTime }: { day: WeatherDay; reportTime: string }) { return <div className="weather-notice"><span aria-hidden="true">☁</span><div><b>{weatherLabel(day)}</b><small>{day.date} · 高德天气 · {reportTime||"以最新预报为准"}</small></div></div>; }
+function ServiceIssueCard({ issue, retryLabel, onRetry, secondaryLabel, onSecondary, busy = false, variant = "inline" }: { issue: ServiceIssue; retryLabel: string; onRetry: () => void; secondaryLabel?: string; onSecondary?: () => void; busy?: boolean; variant?: "inline" | "blocking" }) {
+  return <section className={`service-issue ${variant}`} role="status" aria-live="polite" aria-atomic="true"><span aria-hidden="true">!</span><div className="service-issue-copy"><b>{issue.title}</b><p>{issue.detail}</p></div><div className="service-issue-actions"><button type="button" disabled={busy} onClick={onRetry}>{busy?"正在重试…":retryLabel}</button>{secondaryLabel&&onSecondary&&<button type="button" onClick={onSecondary}>{secondaryLabel}</button>}</div></section>;
+}
 function SettingRow({ icon, label, value, onClick }: { icon: string; label: string; value?: string; onClick?: () => void }) { return <button className="setting-row" onClick={onClick}><span aria-hidden="true">{icon}</span><b>{label}</b>{value && <small>{value}</small>}<i aria-hidden="true">›</i></button>; }
 function ToggleRow({ label, note, value, disabled, onChange }: { label: string; note: string; value: boolean; disabled?: boolean; onChange: (value: boolean) => void }) { return <div className="toggle-row"><div><b>{label}</b><small>{note}</small></div><button type="button" role="switch" aria-label={label} aria-checked={value} className={value?"on":""} disabled={disabled} onClick={()=>onChange(!value)}><i aria-hidden="true"/></button></div>; }
 function PhotoUpload({ added, busy, onFile }: { added: boolean; busy: boolean; onFile: (file: File) => void }) { return <label className={`photo-upload ${added ? "added" : ""}`}><input className="sr-only" type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} onChange={event=>{const file=event.currentTarget.files?.[0];if(file)onFile(file);event.currentTarget.value="";}}/><span>{busy?"…":added?"✓":"+"}</span>{busy?"正在安全上传…":added?"已上传 1 张 · 可随时撤回":"选择照片（JPG、PNG 或 WebP，最大 8MB）"}</label>; }

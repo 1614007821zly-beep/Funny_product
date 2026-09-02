@@ -20,7 +20,8 @@ test("updates the inspiration area from authenticated reverse geolocation", asyn
   assert.match(page, /fetch\("\/api\/location", \{ method: "POST"/);
   assert.match(page, /district: resolved\.businessArea \|\| resolved\.district/);
   assert.match(page, /const inspirationCity = locationPrefs\.city \|\| profile\.city/);
-  assert.match(page, /city: inspirationCity, moods:/);
+  assert.match(page, /const requestCity = requestLocation\.city \|\| profile\.city/);
+  assert.match(page, /city: requestCity, moods:/);
   assert.match(page, /定位变化后会自动更新；自动结果也可以继续修改/);
   assert.doesNotMatch(page, /AMAP_WEB_SERVICE_KEY/);
 });

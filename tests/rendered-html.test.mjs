@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V54 experience", async () => {
+test("server-renders the Love Diary V55 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V54/);
+  assert.match(html, /<title>恋爱日记 V55/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -219,7 +219,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /fetch\("\/api\/account\/export"/);
   assert.match(page, /calendarDayStatus\(dateKey\)/);
   assert.match(page, /refreshSharedCalendar/);
-  assert.match(page, /loadSharedSchedule\(true, true\)/);
+  assert.match(page, /refreshSharedData\(true\)/);
   assert.match(page, /共同安排与重要日子约 5 秒自动同步/);
   assert.match(page, /festival-banner/);
   assert.match(page, /国务院办公厅安排/);
