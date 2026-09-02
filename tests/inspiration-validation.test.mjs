@@ -43,17 +43,19 @@ test('候选编号必须来自实际发给模型的12项且不能重复',()=>{
 });
 function createRoute(options={}) {
   const calls=[];
-  const DB={prepare:sql=>({bind(){return this;},first:async()=>sql.includes('RETURNING request_count')?{request_count:1}:null,run:async()=>({success:true})})};
-  const api=module(read('app/api/inspiration/route.ts')+'\nexports.helpers={sanitizeInput,candidateCategories,parseCandidate,validatePlan,buildCandidateFallbackPlans,composePlacesForBudget,generatePlans};',{
+  const databaseBatches=[];
+  const DB={prepare:sql=>({sql,values:[],bind(...values){this.values=values;return this;},first:async()=>sql.includes('RETURNING request_count')?{request_count:1}:null,all:async()=>({results:options.feedbackRows??[]}),run:async()=>({success:true})}),batch:async statements=>{databaseBatches.push(statements);return statements.map(()=>({success:true}));}};
+  const monitoring=module(read('lib/service-monitoring.ts'),{crypto:webcrypto,require:name=>name==='cloudflare:workers'?{env:{DB}}:{}});
+  const api=module(read('app/api/inspiration/route.ts')+'\nexports.helpers={sanitizeInput,candidateCategories,parseCandidate,validatePlan,buildCandidateFallbackPlans,buildUnverifiedFallbackPlans,composePlacesForBudget,generatePlans,timelineStartLabel,emptyLearnedPreferences,buildLearnedPreferences,learnedPreferenceScore,scoreCandidate};',{
     process:{env:{AIHUBMIX_API_KEY:'test-not-a-secret',AMAP_WEB_SERVICE_KEY:'test-not-a-secret',AIHUBMIX_MODEL:'coding-glm-5.3-flash-free',AIHUBMIX_BASE_URL:'https://api.inferera.com/v1',...options.environment}},
-    require:name=>name==='cloudflare:workers'?{env:{DB}}:name.includes('chatgpt-auth')?{getChatGPTUser:async()=>options.anonymous?null:{userId:'test-user'}}:name.includes('amap-weather')?{fetchWeather:async()=>null,weatherPrompt:()=>''}:name.includes('recommendation-feedback')?feedback:ai,
+    require:name=>name==='cloudflare:workers'?{env:{DB}}:name.includes('chatgpt-auth')?{getChatGPTUser:async()=>options.anonymous?null:{userId:'test-user'}}:name.includes('amap-weather')?{fetchWeather:async()=>null,weatherPrompt:()=>''}:name.includes('recommendation-feedback')?feedback:name.includes('service-monitoring')?monitoring:ai,
     fetch:async(url,init)=>{
       calls.push({url:String(url),body:init?.body?JSON.parse(init.body):null});
       if(String(url).includes('restapi.amap.com')) return Response.json({status:'1',pois:options.empty?[]:Array.from({length:6},(_,i)=>({id:`poi-${i}`,name:`测试书店${i}`,location:`104.0${80+i},30.65`,address:'测试街道',distance:500+i*100,type:'书店',business:{cost:'30'}}))});
       return Response.json(options.answer??envelope(body()),{status:options.status??200});
     },
   });
-  return {...api,calls};
+  return {...api,calls,databaseBatches};
 }
 const input=extra=>createRoute().helpers.sanitizeInput({city:'成都',budget:'¥100以内',space:'室内',longitude:104.08,latitude:30.65,radius:5000,...extra});
 function place(id,extra={}) {return {id,name:`测试书店${id}`,category:'书店',location:'104.08,30.65',distance:500,cost:'30',score:50,address:'测试街道',businessArea:'',openTimeToday:'',rating:'',recommendationReasons:[],...extra};}
@@ -96,6 +98,28 @@ test('高德搜索关键词不充当活动分类：餐饮店不能标成书店',
   assert.equal(h.parseCandidate({...food,name:'测试书局',type:'购物服务;图书音像店'},input(),'书店').length,1);
   assert.equal(h.parseCandidate({...food,name:'测试商场停车场'},input(),'商场').length,0);
 });
+test('情侣推荐排除儿童及亲子专属场馆',()=>{
+  const h=createRoute().helpers;
+  const base={id:'climb',name:'岩选攀岩',location:'104.08,30.65',address:'测试街道',type:'体育休闲服务;运动场馆;攀岩馆',business:{cost:'160'}};
+  assert.equal(h.parseCandidate(base,input({budget:'¥300+'}),'攀岩').length,1);
+  for(const name of ['攀登侠儿童攀岩馆','亲子抱石体验馆','少儿攀岩训练中心']) {
+    assert.equal(h.parseCandidate({...base,id:name,name},input({budget:'¥300+'}),'攀岩').length,0);
+  }
+});
+test('历史反馈只调整排序，地点不准确才长期排除具体地点',()=>{
+  const h=createRoute().helpers;
+  const learned=h.buildLearnedPreferences([
+    {sentiment:'suitable',reason:null,place_ids_json:'["liked"]',brand_keys_json:'["偏好品牌"]',category:'书店',distance_band_m:500,cost_band_yuan:80},
+    {sentiment:'unsuitable',reason:'not_novel',place_ids_json:'["ordinary"]',brand_keys_json:'[]',category:'咖啡馆',distance_band_m:1000,cost_band_yuan:100},
+    {sentiment:'unsuitable',reason:'place_inaccurate',place_ids_json:'["wrong"]',brand_keys_json:'[]',category:'书店',distance_band_m:null,cost_band_yuan:null},
+  ]);
+  assert.ok(learned.likedCategories.书店>0);assert.ok(learned.dislikedCategories.咖啡馆>0);assert.deepEqual(plain(learned.avoidedPlaceIds),['wrong']);
+  const conditions=input();
+  const liked={name:'偏好品牌店',category:'书店',distance:500,address:'',businessArea:'',rating:'4.5',cost:'30',openTimeToday:''};
+  assert.ok(h.scoreCandidate(liked,conditions,learned).score>h.scoreCandidate(liked,conditions,h.emptyLearnedPreferences()).score);
+  const poi={id:'wrong',name:'测试书店',location:'104.08,30.65',address:'测试街道',type:'书店',business:{cost:'30'}};
+  assert.equal(h.parseCandidate(poi,conditions,'书店',learned).length,0);
+});
 test('双人总价、虚假报价与字段来源以地点事实为准',()=>{
   const h=createRoute().helpers;const conditions=input({partnerMood:'想放松'});
   const candidates=[place('over',{cost:'80'}),place('ok',{cost:'40'})];
@@ -123,6 +147,19 @@ test('未填写特殊照顾时不发送该字段，填写后进入提示约束',
   assert.doesNotMatch(api.calls[0].body.messages[1].content,/需要特别照顾：|少走路是硬性条件/);
   await api.helpers.generatePlans('fake',input({special:'少走路'}),null,[place('a'),place('b'),place('c')]);
   assert.match(api.calls[1].body.messages[1].content,/需要特别照顾：少走路/);
+});
+test('今晚时间线不会使用已经过去的模型时刻',()=>{
+  const h=createRoute().helpers;
+  assert.equal(h.timelineStartLabel('今晚',new Date('2026-09-02T12:41:00.000Z')),'现在');
+  assert.equal(h.timelineStartLabel('今晚',new Date('2026-09-02T08:00:00.000Z')),'18:30');
+  const raw=plan();raw.timeline=[
+    {time:'18:30',title:'旧出发时间',description:'模型旧时间'},
+    {time:'19:00',title:'旧确认时间',description:'模型旧时间'},
+    {time:'21:30',title:'旧到达时间',description:'模型旧时间'},
+  ];
+  const result=h.validatePlan(raw,[place('a')],new Set(),0,input({time:'今晚'}));
+  assert.notDeepEqual(plain(result.timeline.map(node=>node.time)),['18:30','19:00','21:30']);
+  assert.deepEqual(plain(result.timeline.slice(1).map(node=>node.time)),['到达前','到达后']);
 });
 test('完整接口拒绝匿名、非法输入及危险配置，不调用上游',async()=>{
   const req=v=>new Request('http://local.test/api/inspiration',{method:'POST',body:JSON.stringify(v)});
@@ -164,6 +201,22 @@ test('高德无候选时生成不含具体商家的活动方向并明确标记�
   const data=await response.json();assert.equal(data.code,'UNVERIFIED_AI_FALLBACK');assert.equal(data.plans.length,3);
   assert.ok(data.plans.every(item=>(item.places??[]).length===0&&(item.includedPlaces??[]).length===0&&item.distanceVerified===false));
   assert.equal(api.calls.filter(c=>c.url.includes('inferera')).length,1);
+});
+test('AI与高德同时不可用时也能快速返回不含商家的备用活动方向',async()=>{
+  const api=createRoute({empty:true,status:500,answer:{error:{message:'unavailable'}}});
+  const response=await api.POST(new Request('http://local.test/api/inspiration',{method:'POST',body:JSON.stringify(input({time:'今晚',space:'户外'}))}));
+  const data=await response.json();assert.equal(data.code,'UNVERIFIED_RULE_FALLBACK');assert.equal(data.plans.length,3);
+  assert.ok(data.plans.every(item=>(item.places??[]).length===0&&item.distanceVerified===false));
+  assert.ok(data.plans.every(item=>item.timeline[0].time==='现在'||item.timeline[0].time==='18:30'));
+});
+test('运行监测只记录服务指标，并标记备用方案触发',async()=>{
+  const api=createRoute({status:500,answer:{error:{message:'unavailable'}}});
+  await api.POST(new Request('http://local.test/api/inspiration',{method:'POST',body:JSON.stringify(input({special:'少走路',longitude:104.081234,latitude:30.651234}))}));
+  const monitoringStatements=api.databaseBatches.flat().filter(statement=>statement.sql.includes('INSERT INTO service_runs'));
+  assert.equal(monitoringStatements.length,4);
+  const values=monitoringStatements.map(statement=>statement.values);
+  assert.ok(values.some(item=>item[1]==='inspiration'&&item[4]==='fallback'&&item[6]===1));
+  assert.doesNotMatch(JSON.stringify(values),/少走路|104\.081234|30\.651234|test-not-a-secret/);
 });
 test('候选不足3项时，切换方案按实际长度循环且单项禁用',()=>{
   const source=read('app/page.tsx');

@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V56 experience", async () => {
+test("server-renders the Love Diary V58 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V56/);
+  assert.match(html, /<title>恋爱日记 V58/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -30,7 +30,7 @@ test("server-renders the Love Diary V56 experience", async () => {
 });
 
 test("keeps accessibility and interaction safeguards in source", async () => {
-  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, historySharingApi, schedulesApi, importantDaysApi, tasksApi, preferencesApi, feedbackApi, mediaApi, shareLinksApi, exportApi, sharePage, holidays, schema, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration, historySharingMigration, sharedExperienceMigration, stageFourMigration, onboardingMigration, hosting] = await Promise.all([
+  const [page, css, layout, api, accountApi, inviteApi, joinApi, leaveApi, historySharingApi, schedulesApi, importantDaysApi, tasksApi, preferencesApi, feedbackApi, recommendationFeedbackApi, mediaApi, shareLinksApi, exportApi, sharePage, holidays, schema, serviceMonitoring, releaseMigration, sharedScheduleMigration, unifiedScheduleMigration, historySharingMigration, sharedExperienceMigration, stageFourMigration, onboardingMigration, feedbackMonitoringMigration, hosting] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -45,12 +45,14 @@ test("keeps accessibility and interaction safeguards in source", async () => {
     readFile(new URL("../app/api/tasks/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/preferences/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/feedback/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/recommendation-feedback/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/media/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/share-links/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/account/export/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/share/[token]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/china-holidays.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/service-monitoring.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0002_release_ended_relationships.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0003_rainy_saracen.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0004_fuzzy_beyonder.sql", import.meta.url), "utf8"),
@@ -58,6 +60,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
     readFile(new URL("../drizzle/0006_lowly_mastermind.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0007_high_gwen_stacy.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0009_blushing_metal_master.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0010_reflective_adam_warlock.sql", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
   ]);
 
@@ -100,7 +103,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(api, /ai_usage_limits/);
   assert.match(api, /DAILY_LIMIT/);
   assert.match(api, /ai_service_state/);
-  assert.match(api, /AI_CIRCUIT_OPEN/);
+  assert.match(api, /UNVERIFIED_RULE_FALLBACK/);
   assert.match(api, /SENSITIVE_INPUT/);
   assert.match(page, /暂时无法生成符合条件的方案/);
   assert.match(page, /\/signin-with-chatgpt\?return_to=/);
@@ -225,6 +228,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(page, /国务院办公厅安排/);
   assert.match(preferencesApi, /ON CONFLICT\(user_id\) DO UPDATE/);
   assert.match(feedbackApi, /INSERT INTO feedback_entries/);
+  assert.match(recommendationFeedbackApi, /INSERT INTO recommendation_feedback/);
+  assert.match(recommendationFeedbackApi, /too_far.*too_expensive.*not_novel.*state_mismatch.*place_inaccurate/s);
+  assert.doesNotMatch(recommendationFeedbackApi, /longitude|latitude|special|AIHUBMIX_API_KEY|AMAP_WEB_SERVICE_KEY/);
   assert.match(mediaApi, /env\.MEDIA\.put/);
   assert.match(mediaApi, /hasValidImageSignature/);
   assert.match(mediaApi, /只有上传者可以撤回这张照片/);
@@ -246,6 +252,12 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(stageFourMigration, /CREATE TABLE `feedback_entries`/);
   assert.match(onboardingMigration, /ALTER TABLE `users` ADD `onboarding_completed_at`/);
   assert.match(onboardingMigration, /FROM `relationship_members`/);
+  assert.match(feedbackMonitoringMigration, /CREATE TABLE `recommendation_feedback`/);
+  assert.match(feedbackMonitoringMigration, /CREATE TABLE `service_runs`/);
+  assert.match(schema, /export const recommendationFeedback/);
+  assert.match(schema, /export const serviceRuns/);
+  assert.match(serviceMonitoring, /DELETE FROM service_runs WHERE created_at/);
+  assert.doesNotMatch(serviceMonitoring, /longitude|latitude|special|clientIp|AIHUBMIX_API_KEY|AMAP_WEB_SERVICE_KEY|user_id/);
   assert.match(hosting, /"r2": "MEDIA"/);
   assert.match(schema, /relationshipMembers/);
   assert.match(schema, /relationshipInvites/);

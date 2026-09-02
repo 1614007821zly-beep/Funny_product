@@ -3,12 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("ranks real AMap candidates before asking AI to compose plans", async () => {
-  const [api, page] = await Promise.all([
+  const [api, page, monitoring] = await Promise.all([
     readFile(new URL("../app/api/inspiration/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/service-monitoring.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.ok(api.indexOf("searchAmapCandidates(amapKey, safeInput)") < api.indexOf("generatePlans(aiHubMixKey, safeInput, weather, candidates, aiConfig)"));
+  assert.ok(api.indexOf("searchAmapCandidates(amapKey, safeInput, learnedPreferences)") < api.indexOf("generatePlans(aiHubMixKey, safeInput, weather, candidates, aiConfig)"));
   assert.match(api, /Promise\.all\(intents\.map/);
   assert.match(api, /const bestById = new Map/);
   assert.match(api, /right\.score - left\.score/);
@@ -16,7 +17,7 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(api, /sortrule", "weight"/);
   assert.match(api, /placeId 必须从下方真实地点候选编号中选择/);
   assert.match(api, /usedPlaceIds\.add/);
-  assert.match(api, /candidateFallbackResponse/);
+  assert.match(api, /candidateFallbackBody/);
   assert.match(api, /REAL_PLACE_FALLBACK/);
   assert.match(api, /buildCandidateFallbackPlans/);
   assert.match(api, /recommendationReasons: scored\.reasons/);
@@ -46,6 +47,12 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.match(api, /LiveHouse/);
   assert.match(api, /沉浸式体验.*香水手作.*银饰工坊.*玻璃工坊.*马术.*室内滑雪.*攀岩/s);
   assert.match(api, /优先新奇体验类活动/);
+  assert.match(api, /儿童\|少儿\|幼儿\|亲子/);
+  assert.match(api, /AI_TIMEOUT_MS = 20_000/);
+  assert.match(api, /loadLearnedPreferences/);
+  assert.match(api, /learnedPreferenceScore/);
+  assert.match(api, /recordServiceRuns/);
+  assert.match(monitoring, /fallback_triggered/);
   assert.match(api, /usedCategories/);
   assert.match(api, /morePlans/);
   assert.match(api, /buildCandidateFallbackPlans\(input, candidates, 12\)/);
@@ -72,12 +79,15 @@ test("ranks real AMap candidates before asking AI to compose plans", async () =>
   assert.doesNotMatch(page, /先看简短说明，需要时再展开/);
   assert.match(page, /方案简介/);
   assert.match(page, /完整方案介绍/);
+  assert.match(page, /活动方向 · 地点待核验/);
+  assert.match(page, /通常在 30 秒内完成；超时会自动采用备用方案/);
   assert.match(page, /共同安排仍需双方分别确认/);
   assert.match(page, /本批还有/);
   assert.match(page, /换一批/);
   assert.match(page, /replaceSelectedPlan/);
-  assert.match(page, /太远.*太贵.*太普通.*不符合状态.*地点不合适/s);
+  assert.match(page, /✓ 合适.*不合适.*太远.*太贵.*不新奇.*不符合状态.*地点不准确/s);
+  assert.match(page, /\/api\/recommendation-feedback/);
   assert.match(page, /selectUnseenPlans/);
-  assert.match(page, /本次浏览不再推荐相同地点或品牌/);
+  assert.match(page, /反馈会用于调整你后续看到的排序/);
   assert.doesNotMatch(page, /format\(260\)/);
 });

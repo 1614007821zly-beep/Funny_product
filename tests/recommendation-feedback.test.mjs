@@ -24,7 +24,7 @@ const handlers = ['generate', 'replaceSelectedPlan', 'replacePlanBatch', 'dislik
 const create = compile(`
 ${helpers}
 (function(initial, respond) {
-  const state = { aiPlans: [], morePlans: [], seenPlaceIds: [], recommendationFeedback: emptyRecommendationFeedback(), selectedPlan: 0, selectedPlaceIndexes: [0,0,0], generationError: '', loadingFailed: false, serviceIssues: {}, screen: 'results', ...initial };
+  const state = { aiPlans: [], morePlans: [], seenPlaceIds: [], recommendationFeedback: emptyRecommendationFeedback(), recommendationFeedbackOpen:false, ratedPlanIdentity:undefined, selectedPlan: 0, selectedPlaceIndexes: [0,0,0], generationError: '', loadingFailed: false, serviceIssues: {}, screen: 'results', ...initial };
   const { aiPlans, morePlans, seenPlaceIds, recommendationFeedback, selectedPlan } = state;
   const eligibleMorePlans = selectUnseenPlans(morePlans, recommendationFeedback, seenPlaceIds);
   const currentPlan = aiPlans[selectedPlan];
@@ -33,17 +33,18 @@ ${helpers}
   const locationPrefs = { district:'', districtSource:'none', radius:5000, longitude:104.08, latitude:30.65 };
   const requestController = { current:null }; const generationRefresh = { current:false }; const weatherRequest = { current:0 };
   const setter = key => value => { state[key] = typeof value === 'function' ? value(state[key]) : value; };
-  const setAiPlans=setter('aiPlans'), setMorePlans=setter('morePlans'), setSeenPlaceIds=setter('seenPlaceIds'), setRecommendationFeedback=setter('recommendationFeedback'), setSelectedPlan=setter('selectedPlan'), setSelectedPlaceIndexes=setter('selectedPlaceIndexes'), setGenerationError=setter('generationError'), setLoadingFailed=setter('loadingFailed'), setCandidatePool=setter('candidatePool'), setWeather=setter('weather'), setHasGenerated=setter('hasGenerated'), setViewingSavedRoute=setter('viewingSavedRoute');
+  const setAiPlans=setter('aiPlans'), setMorePlans=setter('morePlans'), setSeenPlaceIds=setter('seenPlaceIds'), setRecommendationFeedback=setter('recommendationFeedback'), setRecommendationFeedbackOpen=setter('recommendationFeedbackOpen'), setRatedPlanIdentity=setter('ratedPlanIdentity'), setSelectedPlan=setter('selectedPlan'), setSelectedPlaceIndexes=setter('selectedPlaceIndexes'), setGenerationError=setter('generationError'), setLoadingFailed=setter('loadingFailed'), setCandidatePool=setter('candidatePool'), setWeather=setter('weather'), setHasGenerated=setter('hasGenerated'), setViewingSavedRoute=setter('viewingSavedRoute');
   const notices=[], requests=[], signals=[];
   const notify = text => notices.push(text); const go = screen => { state.screen=screen; };
   const reportServiceIssue = (source,title,detail) => { state.serviceIssues = {...state.serviceIssues,[source]:{source,title,detail}}; };
   const clearServiceIssue = source => { const next={...state.serviceIssues}; delete next[source]; state.serviceIssues=next; };
+  const persistentFeedback=[]; const persistRecommendationFeedback=async(sentiment,reason)=>{persistentFeedback.push({sentiment,reason});};
   const fetch = async (url, options) => { requests.push(JSON.parse(options.body)); signals.push(options.signal); return { ok:true, json:async () => respond ? respond(requests.at(-1)) : ({ plans:[], morePlans:[] }) }; };
   ${handlers}
-  return { state, notices, requests, signals, generationRefresh, generate, replaceSelectedPlan, replacePlanBatch, dislikeCurrentPlan, planAllowedByFeedback };
+  return { state, notices, requests, signals, persistentFeedback, generationRefresh, generate, replaceSelectedPlan, replacePlanBatch, dislikeCurrentPlan, planAllowedByFeedback };
 })`, shared);
-const apiNames = ['requestFeedback','feedbackLimit','sanitizeInput','clean','finiteNumber','clampNumber','budgetBand','scoreCandidate','composePlacesForBudget','eligibleCandidate','lowMobilityTimeline','knownPlaceCost','brandKey','routeDistance','geographicDistance','validCoordinates','budgetMatchSummary','buildCandidateFallbackPlans'];
-const api = compile(`${apiNames.map(n => named(route.statements, n)).join('\n')}\n({sanitizeInput, scoreCandidate, buildCandidateFallbackPlans, requestFeedback});`, {...shared,...ai});
+const apiNames = ['requestFeedback','feedbackLimit','sanitizeInput','clean','finiteNumber','clampNumber','budgetBand','scoreCandidate','composePlacesForBudget','eligibleCandidate','lowMobilityTimeline','knownPlaceCost','brandKey','routeDistance','geographicDistance','validCoordinates','budgetMatchSummary','timelineStartLabel','buildCandidateFallbackPlans','emptyLearnedPreferences','learnedPreferenceScore'];
+const api = compile(`${apiNames.map(n => named(route.statements, n)).join('\n')}\n({sanitizeInput, scoreCandidate, buildCandidateFallbackPlans, requestFeedback, emptyLearnedPreferences, learnedPreferenceScore});`, {...shared,...ai});
 function place(id, overrides={}) {
   return { id, name:`场所${id}`, category:'咖啡馆', distance:500, cost:'50', address:'', businessArea:'', rating:'4.5', openTimeToday:'', location:'104.08,30.65', recommendationReasons:[], score:50, ...overrides };
 }
@@ -78,10 +79,10 @@ const plain = value => JSON.parse(JSON.stringify(value));
     assert.equal(h.planAllowedByFeedback(plan('x'),{...empty(),categories:['咖啡馆']}),false);
   });
   await check('5种反馈都会记录地点并从当前池更换方案', () => {
-    for(const reason of ['太远','太贵','太普通','不符合状态','地点不合适']) {
+    for(const reason of ['太远','太贵','不新奇','不符合状态','地点不准确']) {
       const next=plan('next',{places:[place('next',{category:'书店',distance:100})],includedPlaces:[],estimatedCost:50});
       const h=create({...initial(),morePlans:[next]}); h.dislikeCurrentPlan(reason);
-      assert.ok(h.state.recommendationFeedback.placeIds.includes('a')); assert.equal(h.state.aiPlans[0].title,'方案next'); assert.equal(h.requests.length,0);
+      assert.ok(h.state.recommendationFeedback.placeIds.includes('a')); assert.equal(h.state.aiPlans[0].title,'方案next'); assert.equal(h.requests.length,0); assert.equal(h.persistentFeedback[0].reason,reason);
     }
   });
   for(const [name,feedback,replacement] of [
@@ -115,6 +116,16 @@ const plain = value => JSON.parse(JSON.stringify(value));
     assert.equal(api.scoreCandidate(place('x',{cost:'80'}),solo).budgetEligible,true);
     assert.equal(api.scoreCandidate(place('x',{cost:'80'}),duo).budgetEligible,false);
     assert.equal(api.scoreCandidate(place('x',{cost:'101'}),solo).budgetEligible,false);
+  });
+  await check('账号级正负反馈会改变后续候选排序而不是盲目扩大候选池',()=>{
+    const conditions=api.sanitizeInput({city:'成都',budget:'¥100–300'});
+    const candidate=place('x',{name:'偏好品牌店',category:'咖啡馆',cost:'80',distance:1500});
+    const emptyLearned=api.emptyLearnedPreferences();
+    const liked={...emptyLearned,likedCategories:{咖啡馆:3},likedBrands:{偏好品牌:2}};
+    const disliked={...emptyLearned,dislikedCategories:{咖啡馆:3},preferredMaxDistance:1000,preferredMaxCost:100};
+    const baseline=api.scoreCandidate(candidate,conditions,emptyLearned).score;
+    assert.ok(api.scoreCandidate(candidate,conditions,liked).score>baseline);
+    assert.ok(api.scoreCandidate(candidate,conditions,disliked).score<baseline);
   });
   await check('低预算规则池返回12个不同地点，不超预算（隔离数据）',()=>{
     const input=api.sanitizeInput({city:'成都',budget:'¥100以内',longitude:104.08,latitude:30.65,radius:3000});

@@ -190,6 +190,40 @@ export const feedbackEntries = sqliteTable("feedback_entries", {
   createdAt: text("created_at").notNull(),
 }, table => [index("idx_feedback_entries_user_created").on(table.userId, table.createdAt)]);
 
+// Recommendation feedback stores only the minimum metadata needed to improve
+// ranking. It intentionally excludes recommendation copy, user conditions,
+// coordinates, contact details, and other free-form input.
+export const recommendationFeedback = sqliteTable("recommendation_feedback", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  sentiment: text("sentiment").notNull(),
+  reason: text("reason"),
+  placeIdsJson: text("place_ids_json").notNull().default("[]"),
+  brandKeysJson: text("brand_keys_json").notNull().default("[]"),
+  category: text("category"),
+  distanceBandM: integer("distance_band_m"),
+  costBandYuan: integer("cost_band_yuan"),
+  createdAt: text("created_at").notNull(),
+}, table => [
+  index("idx_recommendation_feedback_user_created").on(table.userId, table.createdAt),
+]);
+
+// Operational monitoring is deliberately anonymous and contains no user ID,
+// input text, coordinates, IP address, or secret values.
+export const serviceRuns = sqliteTable("service_runs", {
+  id: text("id").primaryKey(),
+  service: text("service").notNull(),
+  source: text("source").notNull(),
+  durationMs: integer("duration_ms").notNull(),
+  outcome: text("outcome").notNull(),
+  failureType: text("failure_type"),
+  fallbackTriggered: integer("fallback_triggered", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull(),
+}, table => [
+  index("idx_service_runs_service_created").on(table.service, table.createdAt),
+  index("idx_service_runs_created").on(table.createdAt),
+]);
+
 export const scheduleShareLinks = sqliteTable("schedule_share_links", {
   id: text("id").primaryKey(),
   scheduleId: text("schedule_id").notNull().references(() => schedules.id),

@@ -10,7 +10,7 @@ type Tab = "home" | "inspire" | "calendar" | "settings";
 type Panel = "" | "edit" | "cancel" | "memoryEdit" | "retractMemory" | "deleteMemory" | "calendarAdd" | "profileEdit" | "cityEdit" | "normalExit" | "safetyExit" | "reportSafety" | "clearData";
 type Place = { id: string; name: string; address: string; location: string; type: string; distance: number | null; businessArea: string; rating: string; cost: string; openTimeToday: string; category: string; recommendationReasons: string[]; verifiedBy: "amap" | "saved" };
 type TimelineNode = { time: string; title: string; description: string };
-type Plan = { eyebrow: string; title: string; meta: string; desc: string; tone: string; duration?: string; timeline?: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean };
+type Plan = { eyebrow: string; title: string; meta: string; desc: string; tone: string; category?: string; duration?: string; timeline?: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean };
 type HistorySharingMode = "from_now" | "selected" | "keep_private";
 type AccountSnapshot = { authenticated: boolean; user?: { id: string; email: string; nickname: string; birthday: string | null; city: string; onboardingCompleted: boolean }; relationship?: { id: string; status: string; partner_id: string | null; partner_name: string | null; partner_birthday: string | null; history_sharing_mode: HistorySharingMode | null; history_sharing_reviewed_at: string | null } | null; invite?: { code: string; partner_note: string | null; expires_at: string; status: string } | null };
 type ScheduleRecord = { id: string; relationship_id: string | null; created_by_user_id: string; accepted_by_user_id: string | null; visibility: "personal" | "shared"; title: string; event_date: string; event_time: string; city: string; status: "active" | "pending_partner" | "confirmed" | "completion_pending" | "completed" | "cancelled" | "deleted"; source: "manual" | "ai" | "legacy_import" | "legacy_shared"; facts_json: string; completion_requested_by_user_id: string | null; completed_at: string | null; version: number; created_at: string; updated_at: string; deleted_at: string | null };
@@ -27,13 +27,16 @@ type WeatherForecast = { source?: "高德天气" | "Open-Meteo"; queryCity: stri
 type LocationPreferences = { city: string; district: string; districtSource: "none" | "auto" | "manual"; radius: number; longitude: number | null; latitude: number | null; label: string };
 type ResolvedLocation = { city: string; district: string; businessArea: string; displayName: string; longitude: number; latitude: number };
 type CandidatePool = { rawCount: number; candidateCount: number; categories: string[]; pagesFetched: number };
-type GeneratedPlanResponse = { title: string; summary: string; duration: string; budgetLabel: string; timeline: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean };
-type FeedbackReason = "太远" | "太贵" | "太普通" | "不符合状态" | "地点不合适";
+type GeneratedPlanResponse = { title: string; summary: string; duration: string; budgetLabel: string; placeQuery: string; timeline: TimelineNode[]; places?: Place[]; includedPlaces?: Place[]; estimatedCost?: number | null; budgetMatch?: "matched" | "unknown" | "under"; searchRadius?: number; distanceVerified?: boolean };
+type FeedbackReason = "太远" | "太贵" | "不新奇" | "不符合状态" | "地点不准确";
 type ServiceIssueSource = "ai" | "location" | "weather" | "sync";
 type ServiceIssue = { source: ServiceIssueSource; title: string; detail: string };
 
 const LEGACY_STORAGE_KEYS = ["love-diary-v112", "love-diary-v17", "love-diary-v16", "love-diary-v15", "love-diary-v14"];
 const INSPIRATION_DRAFT_KEY = "love-diary-inspiration-draft-v1";
+const feedbackReasonCodes: Record<FeedbackReason, "too_far" | "too_expensive" | "not_novel" | "state_mismatch" | "place_inaccurate"> = {
+  太远: "too_far", 太贵: "too_expensive", 不新奇: "not_novel", 不符合状态: "state_mismatch", 地点不准确: "place_inaccurate",
+};
 
 const Arrow = () => <span aria-hidden="true">→</span>;
 const Back = ({ onClick }: { onClick: () => void }) => <button className="icon-button" onClick={onClick} aria-label="返回">‹</button>;
@@ -55,6 +58,7 @@ function toPlan(plan: GeneratedPlanResponse, index: number, time: string, budget
     meta: `${time} · 预算偏好 ${budget}`,
     desc: plan.summary,
     tone: ["primary", "cream", "lilac"][index] ?? "cream",
+    category: plan.placeQuery,
     duration: plan.duration,
     timeline: plan.timeline,
     places: plan.places,
@@ -163,6 +167,9 @@ export default function Home() {
   const [morePlans, setMorePlans] = useState<Plan[]>([]);
   const [seenPlaceIds, setSeenPlaceIds] = useState<string[]>([]);
   const [recommendationFeedback, setRecommendationFeedback] = useState<RecommendationFeedback>(emptyRecommendationFeedback);
+  const [recommendationFeedbackOpen, setRecommendationFeedbackOpen] = useState(false);
+  const [recommendationFeedbackBusy, setRecommendationFeedbackBusy] = useState(false);
+  const [ratedPlanIdentity, setRatedPlanIdentity] = useState<string | undefined>(undefined);
   const [generationError, setGenerationError] = useState("");
   const [serviceIssues, setServiceIssues] = useState<Partial<Record<ServiceIssueSource, ServiceIssue>>>({});
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
@@ -685,7 +692,8 @@ export default function Home() {
     const controller = new AbortController();
     requestController.current = controller;
     const activeFeedback = refreshPool ? feedbackOverride : emptyRecommendationFeedback();
-    if (!refreshPool) { setRecommendationFeedback(activeFeedback); setSeenPlaceIds([]); }
+    if (!refreshPool) { setRecommendationFeedback(activeFeedback); setSeenPlaceIds([]); setRatedPlanIdentity(undefined); }
+    setRecommendationFeedbackOpen(false);
     setGenerationError(""); clearServiceIssue("ai"); setLoadingFailed(false); setCandidatePool(null); go("loading");
     try {
       const requestCity = requestLocation.city || profile.city;
@@ -722,7 +730,7 @@ export default function Home() {
       setSeenPlaceIds(current => [...new Set([...(refreshPool ? current : []), ...displayedPlaceIds])]);
       setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); setHasGenerated(true); clearServiceIssue("ai"); clearServiceIssue("location"); go("results");
       if (data.code === "REAL_PLACE_FALLBACK") notify("AI 暂时繁忙，已根据真实地点生成可执行方案");
-      if (data.code === "UNVERIFIED_AI_FALLBACK") {
+      if (["UNVERIFIED_AI_FALLBACK", "UNVERIFIED_RULE_FALLBACK"].includes(data.code ?? "")) {
         reportServiceIssue("location", "真实地点暂时无法核验", "已生成活动方向；具体商家、距离与营业状态需要稍后重新搜索或出发前确认。");
         notify("已生成活动方向，具体地点暂时需要自行确认");
       }
@@ -743,6 +751,7 @@ export default function Home() {
     setAiPlans(current => current?.map((plan, index) => index === selectedPlan ? next : plan) ?? current);
     setSelectedPlaceIndexes(current => current.map((value, index) => index === selectedPlan ? 0 : value));
     setSeenPlaceIds(current => [...new Set([...current, ...recommendationPlaces(next).map(place => place.id)])]);
+    setRecommendationFeedbackOpen(false);
     notify(notice);
   }
   function replacePlanBatch() {
@@ -752,7 +761,34 @@ export default function Home() {
     setAiPlans(batch);
     setMorePlans(current => current.filter(plan => !identities.has(planIdentity(plan))));
     setSeenPlaceIds(current => [...new Set([...current, ...batch.flatMap(plan => recommendationPlaces(plan).map(place => place.id))])]);
-    setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); notify("已换成 3 个未看过的方案");
+    setSelectedPlaceIndexes([0, 0, 0]); setSelectedPlan(0); setRecommendationFeedbackOpen(false); notify("已换成 3 个未看过的方案");
+  }
+  async function persistRecommendationFeedback(sentiment: "suitable" | "unsuitable", reason?: FeedbackReason) {
+    const ratedPlan = currentPlan;
+    const identity = planIdentity(ratedPlan);
+    setRecommendationFeedbackBusy(true);
+    try {
+      const response = await fetch("/api/recommendation-feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sentiment,
+          reason: reason ? feedbackReasonCodes[reason] : undefined,
+          category: ratedPlan.category,
+          places: recommendationPlaces(ratedPlan).map(place => ({ id: place.id, name: place.name, category: place.category, distance: place.distance })),
+          estimatedCost: ratedPlan.estimatedCost ?? null,
+        }),
+      });
+      if (!response.ok) throw new Error("反馈保存失败");
+      setRatedPlanIdentity(identity);
+      if (sentiment === "suitable") notify("已记住这类偏好，后续推荐会适当提高排序");
+    } catch {
+      notify(sentiment === "suitable" ? "暂时无法保存偏好，请稍后再试" : "已完成本次更换，但长期偏好暂未保存");
+    } finally { setRecommendationFeedbackBusy(false); }
+  }
+  function likeCurrentPlan() {
+    setRecommendationFeedbackOpen(false);
+    void persistRecommendationFeedback("suitable");
   }
   function dislikeCurrentPlan(reason: FeedbackReason) {
     const places = recommendationPlaces(currentPlan);
@@ -761,11 +797,13 @@ export default function Home() {
     const nextFeedback: RecommendationFeedback = {
       placeIds: [...new Set([...recommendationFeedback.placeIds, ...places.map(place => place.id)])],
       brands: [...new Set([...recommendationFeedback.brands, ...places.map(place => recommendationBrandKey(place.name))])],
-      categories: ["太普通", "不符合状态"].includes(reason) && primary?.category ? [...new Set([...recommendationFeedback.categories, primary.category])] : recommendationFeedback.categories,
+      categories: ["不新奇", "不符合状态"].includes(reason) && primary?.category ? [...new Set([...recommendationFeedback.categories, primary.category])] : recommendationFeedback.categories,
       maxDistance: reason === "太远" && distance !== null ? Math.min(recommendationFeedback.maxDistance ?? Infinity, distance) : recommendationFeedback.maxDistance,
       maxCost: reason === "太贵" && currentPlan.estimatedCost !== null && currentPlan.estimatedCost !== undefined ? Math.min(recommendationFeedback.maxCost ?? Infinity, Math.max(0, currentPlan.estimatedCost)) : recommendationFeedback.maxCost,
     };
     setRecommendationFeedback(nextFeedback);
+    setRecommendationFeedbackOpen(false);
+    void persistRecommendationFeedback("unsuitable", reason);
     replaceSelectedPlan(nextFeedback, `已记住“${reason}”，并更换当前方案`);
   }
   function resetJourney() {
@@ -777,7 +815,7 @@ export default function Home() {
     ["love-diary-legacy-backup", "love-diary-legacy-plan-migrated", "love-diary-legacy-plan-dismissed", "love-diary-solo-user"].forEach(key => window.localStorage.removeItem(key));
     setChoices({ mood: "想放松", taMood: "和我一样", vibe: "安静", time: "今晚", budget: "¥100–300", space: "都可以", special: "" });
     setMyStates(["想放松"]); setCustomStates([]); setLocationPrefs({ city: "", district: "", districtSource: "none", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
-    setLegacyPlan(null); setSoloMode(false); setAiPlans(null); setMorePlans([]); setSeenPlaceIds([]); setRecommendationFeedback(emptyRecommendationFeedback()); setHasGenerated(false); setTaskContextActive(false); setTaskLinked(false); setMemoryContentRetracted(false); setRelationshipExited(false); setSafetyExitUsed(false); setPanel("");
+    setLegacyPlan(null); setSoloMode(false); setAiPlans(null); setMorePlans([]); setSeenPlaceIds([]); setRecommendationFeedback(emptyRecommendationFeedback()); setRecommendationFeedbackOpen(false); setRatedPlanIdentity(undefined); setHasGenerated(false); setTaskContextActive(false); setTaskLinked(false); setMemoryContentRetracted(false); setRelationshipExited(false); setSafetyExitUsed(false); setPanel("");
     history.current = []; void loadSharedSchedule(true); void loadSharedExperiences(true); go("welcome", true);
   }
 
@@ -1130,13 +1168,13 @@ export default function Home() {
     <main className="prototype-shell" id="main-content">
       <aside className="prototype-notes">
         <div className="brand-mark">日</div>
-        <p className="kicker">恋爱日记 · V56 单人与共同体验</p>
+        <p className="kicker">恋爱日记 · V58 单人与共同体验</p>
         <h1>把一起生活的<br/>小事，好好留下。</h1>
         <p className="intro">从一个轻松的约会灵感开始，经过双方确认，成为共同安排，最后自然沉淀为回忆。</p>
         <ol className="journey" aria-label="体验流程">
           {["相遇", "我们", "灵感", "计划", "安排", "日历", "回忆"].map((label, i) => <li key={label} className={step >= i + 1 ? "done" : ""} aria-current={step === i + 1 ? "step" : undefined}><i aria-hidden="true">{step > i + 1 ? "✓" : i + 1}</i><span>{label}</span></li>)}
         </ol>
-        <p className="hint">V56 在高德或 AI 暂时不可用时仍保留条件，并提供可信的降级结果。</p>
+        <p className="hint">V58 会根据你的合适与不合适反馈调整后续排序，并在服务异常时自动切换备用方案。</p>
       </aside>
 
       <section className="phone-stage">
@@ -1217,7 +1255,7 @@ export default function Home() {
             )}
 
             {screen === "loading" && (
-              <div className="page loading-page"><header><Back onClick={() => back("inspire")}/><span>正在寻找灵感</span><i aria-hidden="true"/></header>{loadingFailed ? <div className="error-state"><ServiceIssueCard variant="blocking" issue={loadingIssue} retryLabel={loadingIssue.source==="location"&&locationPrefs.radius<10000?"扩大到 10 公里重试":"再试一次"} onRetry={()=>{if(loadingIssue.source==="location"&&locationPrefs.radius<10000){const next={...locationPrefs,radius:10000};setLocationPrefs(next);void generate(false,generationRefresh.current,recommendationFeedback,next);}else void generate(false,generationRefresh.current);}} secondaryLabel="调整商圈与条件" onSecondary={()=>go("inspire")}/></div> : <div className="ai-loading" role="status" aria-live="polite"><div className="loading-orbit" aria-hidden="true"><span>✦</span></div><p className="kicker">{hasRelationship?"读懂你们此刻的心情":"读懂你此刻的心情"}</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配{hasRelationship?"你们":"你的"}状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>正在核验地点并生成内容，可能需要约一分钟；返回可保留已选条件。</p></div>}</div>
+              <div className="page loading-page"><header><Back onClick={() => back("inspire")}/><span>正在寻找灵感</span><i aria-hidden="true"/></header>{loadingFailed ? <div className="error-state"><ServiceIssueCard variant="blocking" issue={loadingIssue} retryLabel={loadingIssue.source==="location"&&locationPrefs.radius<10000?"扩大到 10 公里重试":"再试一次"} onRetry={()=>{if(loadingIssue.source==="location"&&locationPrefs.radius<10000){const next={...locationPrefs,radius:10000};setLocationPrefs(next);void generate(false,generationRefresh.current,recommendationFeedback,next);}else void generate(false,generationRefresh.current);}} secondaryLabel="调整商圈与条件" onSecondary={()=>go("inspire")}/></div> : <div className="ai-loading" role="status" aria-live="polite"><div className="loading-orbit" aria-hidden="true"><span>✦</span></div><p className="kicker">{hasRelationship?"读懂你们此刻的心情":"读懂你此刻的心情"}</p><h2>正在把今晚，<br/>想得刚刚好。</h2><div className="loading-steps"><span className="on">✓ 匹配{hasRelationship?"你们":"你的"}状态</span><span className="on">• 安排合适的节奏</span><span>• 整理 1 主 + 2 备选</span></div><p>通常在 30 秒内完成；超时会自动采用备用方案，返回仍可保留已选条件。</p></div>}</div>
             )}
 
             {["results", "plan", "location", "confirm"].includes(screen) && !aiPlans && <div className="page formal-page"><header><Back onClick={() => go("inspire")}/><span>灵感参考</span><i aria-hidden="true"/></header><section className="empty-formal"><span>✦</span><h2>本次灵感尚未生成或已失效</h2><p>已保存的安排仍在日历中。当前版本尚未保存完整灵感路线，不会使用演示内容替代。</p><button className="primary-button" onClick={() => go("inspire")}>返回灵感条件 <Arrow/></button></section></div>}
@@ -1228,8 +1266,8 @@ export default function Home() {
                 <div className="result-intro"><p className="kicker">{inspirationCity} · {choices.time} · {choices.mood} · {locationPrefs.longitude===null?"商圈搜索 · 距离待定位":`搜索范围 ${locationPrefs.radius/1000} km`}</p><h2>{choices.space === "室内" ? <>留在室内，<br/>也能认真约会。</> : <>不赶时间，<br/>也不辜负今晚。</>}</h2>{inspirationWeather&&<p className="weather-summary">{weatherSource(weather)} · {inspirationWeather.date} · {weatherLabel(inspirationWeather)}</p>}{candidatePool&&candidatePool.candidateCount>0&&<p className="candidate-pool-summary">已从高德返回的 {candidatePool.rawCount} 条结果中，筛出 {candidatePool.candidateCount} 个供进一步核对的候选地点</p>}</div>
                 {weatherIssueNotice(inspirationCity)}
                 <div className="result-pool-actions"><span>{eligibleMorePlans.length>0?`本批还有 ${eligibleMorePlans.length} 个未展示方案`:"本批候选已接近看完"}</span><button type="button" onClick={replacePlanBatch}>换一批</button></div>
-                <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => setSelectedPlan(0)}><div className="plan-top"><span>主灵感 · {aiPlans ? "真实地点组合" : "演示方案"}</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · 预算偏好 {choices.budget} · {choices.space}</p><b className="plan-introduction-label">方案简介</b><p>{dynamicPlans[0].desc}</p>{dynamicPlans[0].places?.[0]&&<span className="place-preview"><b>真实地点</b>{dynamicPlans[0].includedPlaces?.map(place=>place.name).join(" + ")||dynamicPlans[0].places[0].name} · {placeDistance(dynamicPlans[0].places[0])}</span>}<span className="plan-cost">{planBudgetText(dynamicPlans[0],choices.budget,hasRelationship)} · {planDistanceText(dynamicPlans[0],locationPrefs.radius)}</span>{choices.special.trim()&&<span className="prep-note">特别照顾：{choices.special.trim()}</span>}</button><div className="alternative-title"><b>也可以试试</b><button type="button" onClick={() => replaceSelectedPlan()}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => setSelectedPlan(i)}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p>{plan.places?.[0]&&<p className="alternative-place">{plan.includedPlaces?.map(place=>place.name).join(" + ")||plan.places[0].name} · {placeDistance(plan.places[0])}</p>}<small className="alternative-cost">{planBudgetText(plan,choices.budget,hasRelationship)}</small></div><i aria-hidden="true">›</i></button>})}</div>
-                <section className="plan-feedback" aria-labelledby="plan-feedback-title"><div><b id="plan-feedback-title">这条灵感不合适？</b><small>选择原因后会立即更换，本次浏览不再推荐相同地点或品牌。</small></div><div>{(["太远","太贵","太普通","不符合状态","地点不合适"] as FeedbackReason[]).map(reason=><button type="button" key={reason} onClick={()=>dislikeCurrentPlan(reason)}>{reason}</button>)}</div></section>
+                <div className="plan-stack"><button className={`plan-card primary main-plan ${selectedPlan === 0 ? "chosen" : ""}`} aria-pressed={selectedPlan === 0} onClick={() => {setSelectedPlan(0);setRecommendationFeedbackOpen(false);}}><div className="plan-top"><span>主灵感 · {dynamicPlans[0].places?.length ? "真实地点组合" : "活动方向 · 地点待核验"}</span>{selectedPlan === 0 && <i>✓ 当前方案</i>}</div><h3>{dynamicPlans[0].title}</h3><p className="plan-meta">{choices.time} · 预算偏好 {choices.budget} · {choices.space}</p><b className="plan-introduction-label">方案简介</b><p>{dynamicPlans[0].desc}</p>{dynamicPlans[0].places?.[0]&&<span className="place-preview"><b>真实地点</b>{dynamicPlans[0].includedPlaces?.map(place=>place.name).join(" + ")||dynamicPlans[0].places[0].name} · {placeDistance(dynamicPlans[0].places[0])}</span>}<span className="plan-cost">{planBudgetText(dynamicPlans[0],choices.budget,hasRelationship)} · {planDistanceText(dynamicPlans[0],locationPrefs.radius)}</span>{choices.special.trim()&&<span className="prep-note">特别照顾：{choices.special.trim()}</span>}</button><div className="alternative-title"><b>也可以试试</b><button type="button" onClick={() => replaceSelectedPlan()}>换一个</button></div>{dynamicPlans.slice(1).map((plan, offset) => {const i=offset+1;return <button key={plan.title} className={`plan-card alternative ${selectedPlan === i ? "chosen" : ""}`} aria-pressed={selectedPlan === i} onClick={() => {setSelectedPlan(i);setRecommendationFeedbackOpen(false);}}><div><h3>{plan.title}</h3><p className="plan-meta">{plan.meta}</p>{plan.places?.[0]&&<p className="alternative-place">{plan.includedPlaces?.map(place=>place.name).join(" + ")||plan.places[0].name} · {placeDistance(plan.places[0])}</p>}<small className="alternative-cost">{planBudgetText(plan,choices.budget,hasRelationship)}</small></div><i aria-hidden="true">›</i></button>})}</div>
+                <section className="plan-feedback" aria-labelledby="plan-feedback-title"><div><b id="plan-feedback-title">这条灵感合适吗？</b><small>反馈会用于调整你后续看到的排序，不会保存心情、特别照顾或精确位置。</small></div><div className="plan-feedback-actions"><button type="button" className="suitable" disabled={recommendationFeedbackBusy||ratedPlanIdentity===planIdentity(currentPlan)} onClick={likeCurrentPlan}>{ratedPlanIdentity===planIdentity(currentPlan)?"✓ 已记录":"✓ 合适"}</button><button type="button" aria-expanded={recommendationFeedbackOpen} onClick={()=>setRecommendationFeedbackOpen(value=>!value)}>不合适</button></div>{recommendationFeedbackOpen&&<div className="plan-feedback-reasons" role="group" aria-label="选择不合适的原因">{(["太远","太贵","不新奇","不符合状态","地点不准确"] as FeedbackReason[]).map(reason=><button type="button" key={reason} disabled={recommendationFeedbackBusy} onClick={()=>dislikeCurrentPlan(reason)}>{reason}</button>)}</div>}</section>
                 <div className="sticky-cta"><button className="primary-button" onClick={() => go("plan")}>查看详细计划 <Arrow /></button></div>
               </div>
             )}
@@ -1238,7 +1276,7 @@ export default function Home() {
               <div className="page detail-page">
                 <div className="detail-hero"><header><Back onClick={() => back("results")}/><span>AI 详细计划</span><button className="icon-button" onClick={() => notify("为保护灵感条件，当前版本不会生成公开计划链接")} aria-label="分享计划说明">↗</button></header><p className="kicker">候选方案 · 尚未进入日历</p><h2>{currentPlan.title}</h2><p className="plan-summary">{currentPlan.desc}</p><div className="detail-meta"><span>{inspirationCity} · {choices.time}</span><span>{currentPlan.duration || "约 3.5 小时"}</span><span>预算偏好 {choices.budget}</span></div></div>
                 <section className="plan-introduction"><p className="kicker">完整方案介绍</p><h3>{viewingSavedRoute?"保存时的灵感参考":"为什么会推荐这个灵感"}</h3><p>{currentPlan.desc}</p><div><b>推荐依据</b><p>{viewingSavedRoute?"以下内容是采用安排时保存的快照；价格、营业状态和路程仍需出发前确认。":`${hasRelationship?"结合你们":"结合你"}选择的“${myStates.join("、") || choices.mood}”、${choices.vibe}氛围、${choices.time}和${choices.budget}总预算进行筛选。`}</p></div><div><b>地点与体验</b><p>{currentPlace?(viewingSavedRoute?`保存时选择了“${currentPlace.name}”；可打开地图重新核实。`:`以高德真实地点“${currentPlace.name}”为核心。${currentPlan.distanceVerified ? `地点在设定的 ${locationPrefs.radius/1000} 公里直线搜索范围内，实际路程请查看地图。` : "当前按商圈搜索，尚未核验与你的距离；请定位或打开地图确认。"}`):`当前方案尚未匹配到可核验的真实地点，可返回调整商圈或搜索范围。`}</p></div><div><b>采用之后</b><p>{viewingSavedRoute?"这是已保存安排的参考信息，不会随着新的灵感选择而改变。":`这仍是候选灵感。确认日期和时间后才会进入日历；${hasRelationship?"共同安排仍需双方分别确认。":"你可以继续保存为个人计划。"}`}</p></div></section>
-                <section className="timeline"><p className="kicker">今晚的节奏</p>{(currentPlan.timeline ?? [
+                <section className="timeline"><p className="kicker">这次的节奏</p>{(currentPlan.timeline ?? [
                   { time: "18:30", title: "在地铁口见面", description: "不用赶，先买两杯喜欢的饮料" }, { time: "19:00", title: "沿江慢慢散步", description: "推荐路线 2.3 km · 约 45 分钟" }, { time: "20:00", title: "河畔小酒馆", description: "靠窗位 · 分享甜点与低度酒" }, { time: "21:40", title: "一起回家", description: "今晚留一个问题给彼此" }
                 ]).map((node, i) => <div className="timeline-item" key={`${node.time}-${node.title}`}><span>{node.time}</span><i aria-hidden="true">{i + 1}</i><div>{node.title === currentPlace?.name ? <a className="place-link" href="#location" onClick={(event) => {event.preventDefault();go("location");}}><b>{node.title}</b><em>查看地点 ›</em></a> : <b>{node.title}</b>}<p>{node.description}</p>{node.title === currentPlace?.name && <button className="replace-place" disabled={currentPlaceCandidates.length < 2} onClick={() => {const next=((selectedPlaceIndexes[selectedPlan]??0)+1)%currentPlaceCandidates.length;setSelectedPlaceIndexes(values=>values.map((value,planIndex)=>planIndex===selectedPlan?next:value));setPlaceVersion(next);notify(`已切换为${currentPlaceCandidates[next]?.name}`);}}>换一个地点</button>}</div></div>)}</section>
                 {currentPlace&&<section className="recommendation-reasons"><p className="kicker">为什么推荐这里</p><h3>{currentPlace.name}</h3><div>{currentPlace.recommendationReasons.map(reason=><span key={reason}>✓ {reason}</span>)}</div><small>评分、价格与营业信息来自高德；可能随时变化，请在出发前复查。</small></section>}
@@ -1322,17 +1360,17 @@ export default function Home() {
 
             {screen === "taskHistory" && <div className="page formal-page"><header><Back onClick={() => back("home")}/><span>共同任务</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">当前任务</p><h2>偶尔想到一件，<br/>值得一起做的小事。</h2></section>{activeTask?<button className="task-history-current" onClick={() => go("task")}><span>♫</span><div><b>{activeTask.title}</b><small>{activeTask.status==="pending_partner"?"等待接受":activeTask.status==="completion_pending"?"等待完成确认":"进行中"}</small></div><i aria-hidden="true">›</i></button>:<div className="empty-inline"><span>○</span><p>当前没有进行中的共同任务</p></div>}<p className="month-title">历史任务</p>{tasks.filter(task=>["completed","cancelled"].includes(task.status)).length?tasks.filter(task=>["completed","cancelled"].includes(task.status)).map(task=><div className="history-row" key={task.id}><span>{task.status==="completed"?"✓":"↻"}</span><div><b>{task.title}</b><small>{task.status==="completed"?"双方已确认完成":"已结束"}</small></div></div>):<div className="empty-inline"><span>○</span><p>还没有已完成或已结束的任务</p></div>}</div>}
 
-            {screen === "settings" && <div className="page tab-page formal-page settings-page"><header><div><p className="kicker">恋爱日记</p><h2>设置</h2></div><i aria-hidden="true"/></header><button type="button" className="settings-profile" onClick={() => go("profile")}><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{profile.name}</b><small>{hasRelationship?`与${partnerProfile.name}已连接`:"单人体验中 · 内容仅自己可见"}</small></div><i aria-hidden="true">›</i></button><section className="settings-group"><SettingRow icon="♢" label={hasRelationship?"我们的资料":"我的资料"} onClick={() => go("profile")}/><SettingRow icon="◌" label={hasRelationship?"我们的重要日子":"我的重要日子"} onClick={() => go("important")}/>{!hasRelationship&&<SettingRow icon="♡" label="邀请 TA 一起使用" value="随时可以" onClick={() => {setOnboardingIntent("invite");go("connect");}}/>}</section><section className="settings-group">{hasRelationship&&<SettingRow icon="♡" label="关系与数据安全" value="可随时退出" onClick={() => go("relationshipSafety")}/>}<SettingRow icon="♢" label="通知与提醒" onClick={() => go("notifications")}/><SettingRow icon="◉" label="隐私与 AI 数据说明" onClick={() => go("privacy")}/><SettingRow icon="▢" label="照片与存储" onClick={() => go("storage")}/></section><section className="settings-group"><SettingRow icon="?" label="帮助与反馈" onClick={() => go("help")}/><SettingRow icon="○" label="关于恋爱日记" value="V56" onClick={() => go("about")}/></section>{bottomNav("settings")}</div>}
+            {screen === "settings" && <div className="page tab-page formal-page settings-page"><header><div><p className="kicker">恋爱日记</p><h2>设置</h2></div><i aria-hidden="true"/></header><button type="button" className="settings-profile" onClick={() => go("profile")}><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{profile.name}</b><small>{hasRelationship?`与${partnerProfile.name}已连接`:"单人体验中 · 内容仅自己可见"}</small></div><i aria-hidden="true">›</i></button><section className="settings-group"><SettingRow icon="♢" label={hasRelationship?"我们的资料":"我的资料"} onClick={() => go("profile")}/><SettingRow icon="◌" label={hasRelationship?"我们的重要日子":"我的重要日子"} onClick={() => go("important")}/>{!hasRelationship&&<SettingRow icon="♡" label="邀请 TA 一起使用" value="随时可以" onClick={() => {setOnboardingIntent("invite");go("connect");}}/>}</section><section className="settings-group">{hasRelationship&&<SettingRow icon="♡" label="关系与数据安全" value="可随时退出" onClick={() => go("relationshipSafety")}/>}<SettingRow icon="♢" label="通知与提醒" onClick={() => go("notifications")}/><SettingRow icon="◉" label="隐私与 AI 数据说明" onClick={() => go("privacy")}/><SettingRow icon="▢" label="照片与存储" onClick={() => go("storage")}/></section><section className="settings-group"><SettingRow icon="?" label="帮助与反馈" onClick={() => go("help")}/><SettingRow icon="○" label="关于恋爱日记" value="V58" onClick={() => go("about")}/></section>{bottomNav("settings")}</div>}
 
             {screen === "notifications" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>通知与提醒</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">只提醒重要的事</p><h2>不让{hasRelationship?"共同":"日常"}生活，<br/>变成通知压力。</h2></section><section className="settings-group">{hasRelationship&&<ToggleRow label="共同安排提醒" note="开始前与变更时提醒" value={preferences.scheduleReminders} disabled={preferencesBusy} onChange={value=>void updatePreference("scheduleReminders",value)}/>}<ToggleRow label="重要日子提醒" note={hasRelationship?"按双方设置的提前时间提醒":"按你设置的提前时间提醒"} value={preferences.importantDayReminders} disabled={preferencesBusy} onChange={value=>void updatePreference("importantDayReminders",value)}/>{hasRelationship&&<ToggleRow label="TA 的状态变化" note="接受安排、完成确认" value={preferences.partnerUpdates} disabled={preferencesBusy} onChange={value=>void updatePreference("partnerUpdates",value)}/>}</section><p className="policy-note">设置保存在你的账户中；不会发送连续签到、任务催促或关系评分通知。</p></div>}
 
-            {screen === "privacy" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>隐私与 AI</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">你的生活，由你决定</p><h2>AI 提供建议，<br/>不会替你确认事实。</h2></section><section className="principle-card"><span>01</span><div><b>建议不是正式安排</b><p>只有你主动采用并确认后，内容才会进入个人或共同日历；备用方案与 AI 方案会清楚标明来源。</p></div></section><section className="principle-card"><span>02</span><div><b>不推断关系与感受</b><p>不生成忠诚度、关系评分、分手概率或心理诊断；用户文字不会被自动覆盖。</p></div></section><section className="principle-card"><span>03</span><div><b>只发送生成所需条件</b><p>请勿输入姓名、联系方式或私密内容；系统会拦截常见联系方式，临时灵感条件不会写入网址。</p></div></section><section className="principle-card"><span>04</span><div><b>每个人都能独立离开</b><p>退出不需要对方确认；自己的敏感内容可以立即撤回，对方离线副本无法远程删除。</p></div></section><section className="principle-card"><span>05</span><div><b>公开原型不等于公开关系</b><p>账号资料、关系与已确认计划通过安全连接同步；灵感表单只保存在当前标签页会话中，不写入网址。</p></div></section>{hasRelationship?<button className="secondary-button safety-entry" onClick={() => go("relationshipSafety")}>查看关系安全设置 <Arrow/></button>:<button className="secondary-button safety-entry" onClick={() => {setOnboardingIntent("invite");go("connect");}}>了解关系建立与退出 <Arrow/></button>}<button className="subtle-danger" onClick={() => setPanel("clearData")}>清空本机会话</button></div>}
+            {screen === "privacy" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>隐私与 AI</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">你的生活，由你决定</p><h2>AI 提供建议，<br/>不会替你确认事实。</h2></section><section className="principle-card"><span>01</span><div><b>建议不是正式安排</b><p>只有你主动采用并确认后，内容才会进入个人或共同日历；备用方案与 AI 方案会清楚标明来源。</p></div></section><section className="principle-card"><span>02</span><div><b>不推断关系与感受</b><p>不生成忠诚度、关系评分、分手概率或心理诊断；用户文字不会被自动覆盖。</p></div></section><section className="principle-card"><span>03</span><div><b>只发送生成所需条件</b><p>请勿输入姓名、联系方式或私密内容；系统会拦截常见联系方式，临时灵感条件不会写入网址。</p></div></section><section className="principle-card"><span>04</span><div><b>每个人都能独立离开</b><p>退出不需要对方确认；自己的敏感内容可以立即撤回，对方离线副本无法远程删除。</p></div></section><section className="principle-card"><span>05</span><div><b>公开原型不等于公开关系</b><p>账号资料、关系与已确认计划通过安全连接同步；灵感表单只保存在当前标签页会话中，不写入网址。</p></div></section><section className="principle-card"><span>06</span><div><b>运行监测不读取生活内容</b><p>只记录服务来源、响应时间、固定失败类型和是否启用备用方案；不记录聊天文字、心情、特别照顾、精确位置、IP 或密钥。</p></div></section>{hasRelationship?<button className="secondary-button safety-entry" onClick={() => go("relationshipSafety")}>查看关系安全设置 <Arrow/></button>:<button className="secondary-button safety-entry" onClick={() => {setOnboardingIntent("invite");go("connect");}}>了解关系建立与退出 <Arrow/></button>}<button className="subtle-danger" onClick={() => setPanel("clearData")}>清空本机会话</button></div>}
 
             {screen === "storage" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>照片、分享与导出</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">上传者始终保有控制权</p><h2>你的内容，<br/>随时可以收回。</h2><p className="confirm-copy">照片以原文件存储；共同照片仅对当前关系成员开放。撤回会删除在线文件，但无法远程删除已保存的离线副本。</p></section>{uploadedMedia?<section className="media-card"><div style={{backgroundImage:`url(${uploadedMedia.url})`}} role="img" aria-label="最近上传的照片"/><p><b>最近上传的照片</b><small>{uploadedMedia.visibility==="shared"?"当前关系成员可查看":"仅自己可见"}</small></p><button className="danger-button" disabled={mediaBusy} onClick={()=>void retractUploadedMedia()}>{mediaBusy?"正在删除…":"撤回并删除在线文件"}</button></section>:<section className="empty-formal compact-empty"><span>▧</span><h2>还没有上传照片</h2><p>支持 JPG、PNG 和 WebP，单张最大 8MB。</p></section>}<PhotoUpload added={Boolean(uploadedMedia)} busy={mediaBusy} onFile={file=>void uploadMemoryPhoto(file)}/><p className="group-label">仍然有效的公开分享</p><section className="settings-group share-management">{managedShareLinks.length?managedShareLinks.map(link=><div key={link.id}><p><b>{link.title}</b><small>{new Intl.DateTimeFormat("zh-CN",{month:"long",day:"numeric",hour:"2-digit",minute:"2-digit"}).format(new Date(link.expiresAt))} 到期 · 原链接只在创建时显示</small></p><button disabled={shareBusy} onClick={()=>void revokeManagedShareLink(link.id)}>撤回</button></div>):<p className="empty-setting-copy">没有仍然有效的公开分享链接</p>}</section><button className="secondary-button export-button" onClick={()=>void exportMyData()}>导出我的数据 <Arrow/></button></div>}
 
             {screen === "help" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>帮助与反馈</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">先回答最常见的问题</p><h2>遇到问题，<br/>可以直接告诉我们。</h2></section><section className="help-list"><details><summary>为什么 AI 灵感不会自动进入日历？</summary><p>AI 只提供建议。只有你主动采用并确认日期、时间后，才会形成个人计划或共同安排。</p></details><details><summary>单人计划会自动分享给 TA 吗？</summary><p>不会。建立关系后仍需由你逐项选择是否发送给 TA。</p></details><details><summary>撤回照片后会发生什么？</summary><p>在线原文件会删除，当前关系成员不再能访问；平台无法删除对方此前保存的离线副本或截屏。</p></details></section><section className="feedback-form"><label>问题类型<select value={feedbackDraft.category} onChange={event=>setFeedbackDraft({...feedbackDraft,category:event.target.value})}><option>产品建议</option><option>功能异常</option><option>隐私与安全</option><option>其他</option></select></label><label>具体情况<textarea maxLength={1000} value={feedbackDraft.message} onChange={event=>setFeedbackDraft({...feedbackDraft,message:event.target.value})} placeholder="请描述发生了什么、你期待怎样改进"/></label><p>{feedbackDraft.message.length}/1000</p><button className="primary-button" disabled={feedbackBusy||!feedbackDraft.message.trim()} onClick={()=>void submitFeedback()}>{feedbackBusy?"正在提交…":"提交反馈"} <Arrow/></button></section></div>}
 
-            {screen === "about" && <div className="page formal-page about-page"><header><Back onClick={() => back("settings")}/><span>关于恋爱日记</span><i aria-hidden="true"/></header><div className="about-mark">♡</div><section className="page-intro compact"><p className="kicker">V56 · 外部服务故障仍可继续</p><h2>让共同生活，<br/>更容易被认真对待。</h2><p className="confirm-copy">恋爱日记帮助两个人从灵感走到正式安排，再把真实发生的事自然留成回忆。AI 只提供建议，不替任何人确认事实或评价关系。</p></section><section className="info-group"><InfoRow label="当前版本" value="V56"/><InfoRow label="数据原则" value="个人所有 · 双方确认"/><InfoRow label="节假日数据" value="国务院办公厅年度通知"/></section><a className="secondary-button map-link" href={holidaySource.url} target="_blank" rel="noreferrer">查看 2026 年节假日来源 <Arrow/></a></div>}
+            {screen === "about" && <div className="page formal-page about-page"><header><Back onClick={() => back("settings")}/><span>关于恋爱日记</span><i aria-hidden="true"/></header><div className="about-mark">♡</div><section className="page-intro compact"><p className="kicker">V58 · 会根据反馈变得更懂你</p><h2>让共同生活，<br/>更容易被认真对待。</h2><p className="confirm-copy">恋爱日记帮助两个人从灵感走到正式安排，再把真实发生的事自然留成回忆。AI 只提供建议，不替任何人确认事实或评价关系。</p></section><section className="info-group"><InfoRow label="当前版本" value="V58"/><InfoRow label="推荐反馈" value="只记录必要的排序信号"/><InfoRow label="运行监测" value="不含聊天、精确位置或密钥"/><InfoRow label="数据原则" value="个人所有 · 双方确认"/></section><a className="secondary-button map-link" href={holidaySource.url} target="_blank" rel="noreferrer">查看 2026 年节假日来源 <Arrow/></a></div>}
 
             {screen === "relationshipSafety" && <div className="page formal-page safety-page"><header><Back onClick={() => back("settings")}/><span>关系与数据安全</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">离开不需要许可</p><h2>你的安全，<br/>不由对方决定。</h2><p className="confirm-copy">任何一方都能独立退出。共同空间解散可以协商，但不能阻止个人离开。</p></section><section className="safety-status"><span>✓</span><div><b>当前共享权限正常</b><p>照片、文字与 AI 衍生内容均记录来源和撤回状态。</p></div></section><section className="settings-group"><SettingRow icon="◎" label="查看我的内容与授权" value="照片与分享" onClick={()=>go("storage")}/><SettingRow icon="⇩" label="导出我的数据" value="不含 TA 已撤回内容" onClick={()=>void exportMyData()}/><SettingRow icon="!" label="举报骚扰或内容滥用" onClick={()=>setPanel("reportSafety")}/></section><section className="safety-explainer"><b>退出后保留什么？</b><p>你自己的内容和必要共同事实可形成只读归档；TA 撤回的内容会显示为占位说明。新关系永远不能访问旧关系数据。</p></section><button className="secondary-button" onClick={()=>setPanel("normalExit")}>退出当前关系</button><button className="danger-button safety-danger" onClick={()=>setPanel("safetyExit")}>立即退出并保护我的内容</button><p className="policy-note">安全退出会先撤销共享、下载和历史文件链接，再通知对方。</p></div>}
 

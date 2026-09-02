@@ -21,6 +21,9 @@ test("keeps AMap weather behind the server and handles forecast limits", async (
 
   assert.match(route, /getChatGPTUser/);
   assert.match(route, /process\.env\.AMAP_WEB_SERVICE_KEY/);
+  assert.match(route, /recordServiceRuns/);
+  assert.match(route, /source: weather\.source/);
+  assert.match(route, /fallbackTriggered: weather\.source !== "高德天气"/);
   assert.match(provider, /restapi\.amap\.com\/v3\/geocode\/geo/);
   assert.match(provider, /restapi\.amap\.com\/v3\/weather\/weatherInfo/);
   assert.match(provider, /geocoding-api\.open-meteo\.com\/v1\/search/);
