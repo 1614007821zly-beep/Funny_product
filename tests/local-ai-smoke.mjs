@@ -27,4 +27,4 @@ assert.ok(pool.every(p=>!/散步|漫步|小酌|微醺/.test(p.title+p.summary)))
 assert.equal(new Set(pool.flatMap(p=>p.includedPlaces.map(p=>p.id))).size,pool.length);
 assert.ok(pool.flatMap(p=>p.includedPlaces).filter(p=>p.category==='书店').every(p=>/书店|书屋|书局|书城|图书馆|图书音像|bookstore/iu.test(p.name+p.type)));
 console.log(JSON.stringify({seconds:(Date.now()-started)/1000,code:data.code??'AI_SUCCESS',source:data.source,plans:data.plans.length,reserve:data.morePlans.length,pool:data.pool,checks:'budget, radius, single venue, no walking itinerary, no duplicates passed',sample:data.plans[0]},null,2));
-assert.ok(data.source?.ai?.includes('coding-glm-5.3-flash-free'),'Live response is fallback; AI integration not proven');
+assert.ok(data.source?.ai?.includes('ox-alpha'),'Live response is fallback; AI integration not proven');

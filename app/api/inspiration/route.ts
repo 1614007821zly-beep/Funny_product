@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { fetchAmapWeather, type AmapWeatherForecast, weatherPrompt } from "../../../lib/amap-weather";
+import { fetchWeather, type AmapWeatherForecast, weatherPrompt } from "../../../lib/amap-weather";
 import { getChatGPTUser } from "../../chatgpt-auth";
 import { planAllowedByFeedback, selectUnseenPlans, recommendationBrandKey, type RecommendationFeedback } from "../../../lib/recommendation-feedback";
 import { inspirationAIConfig, inspirationInputError, parseAIPlans, userConditions, categoryAllowed, unsafePlanCopy } from "../../../lib/inspiration-ai";
@@ -103,13 +103,12 @@ export async function POST(request: Request) {
   const limit = await takeUsageLimit(identity.userId, clientIp);
   if (limit === "minute") return json({ error: "请求过于频繁，请稍后再试。", code: "RATE_LIMITED" }, 429);
   if (limit === "daily") return json({ error: "今天的 AI 灵感次数已用完，请明天再试。", code: "DAILY_LIMITED" }, 429);
-  const weather = amapKey ? await fetchAmapWeather(amapKey, safeInput.city).catch(() => null) : null;
-  const candidateSearch = amapKey ? await searchAmapCandidates(amapKey, safeInput).catch(() => emptyCandidateSearch()) : emptyCandidateSearch();
+  const [weather, candidateSearch] = await Promise.all([
+    fetchWeather(amapKey, safeInput.city).catch(() => null),
+    amapKey ? searchAmapCandidates(amapKey, safeInput).catch(() => emptyCandidateSearch()) : Promise.resolve(emptyCandidateSearch()),
+  ]);
   const candidates = candidateSearch.places;
   const feedback = requestFeedback(safeInput);
-  if (!candidates.length) {
-    return json({ plans: [], morePlans: [], weather, pool: candidateSearch.pool, code: "NO_MATCHING_PLACES" });
-  }
   if (!await circuitAllowsRequest()) {
     if (candidates.length) return candidateFallbackResponse(safeInput, candidates, candidateSearch.pool, weather, amapKey);
     return json({ error: "AI 服务正在短暂恢复，请几分钟后再试。", code: "AI_CIRCUIT_OPEN" }, 503);
@@ -127,12 +126,12 @@ export async function POST(request: Request) {
   plans = selectUnseenPlans(plans, feedback, safeInput.excludePlaceIds);
   const usedPlaceIds = new Set(plans.flatMap(plan => (plan.includedPlaces ?? plan.places ?? []).map(place => place.id)));
   const morePlans = candidates.length ? selectUnseenPlans(buildCandidateFallbackPlans(safeInput, candidates, 9, usedPlaceIds), feedback, [...usedPlaceIds, ...safeInput.excludePlaceIds]) : [];
-  return json({ plans, morePlans, weather, pool: candidateSearch.pool, source: { ai: `AIHubMix / ${aiConfig.model}`, places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
+  return json({ plans, morePlans, weather, pool: candidateSearch.pool, code: candidates.length ? undefined : "UNVERIFIED_AI_FALLBACK", source: { ai: `AIHubMix / ${aiConfig.model}`, places: candidates.length ? "高德地图" : "地点待核验", weather: weather?.source ?? "暂不可用" } });
 }
 
 function candidateFallbackResponse(input: Required<InspirationRequest>, candidates: AmapPlace[], pool: CandidatePool, weather: AmapWeatherForecast | null, amapKey: string | undefined) {
   const planPool = selectUnseenPlans(buildCandidateFallbackPlans(input, candidates, 12), requestFeedback(input), input.excludePlaceIds);
-  return json({ plans: planPool.slice(0, 3), morePlans: planPool.slice(3), weather, pool, code: "REAL_PLACE_FALLBACK", source: { ai: "规则组合（AI 暂时繁忙）", places: amapKey ? "高德地图" : "未配置", weather: weather ? "高德天气" : "暂不可用" } });
+  return json({ plans: planPool.slice(0, 3), morePlans: planPool.slice(3), weather, pool, code: "REAL_PLACE_FALLBACK", source: { ai: "规则组合（AI 暂时繁忙）", places: amapKey ? "高德地图" : "未配置", weather: weather?.source ?? "暂不可用" } });
 }
 
 function buildCandidateFallbackPlans(input: Required<InspirationRequest>, candidates: AmapPlace[], requestedCount = 3, existingUsedPlaceIds = new Set<string>()): GeneratedPlan[] {
@@ -209,7 +208,7 @@ async function generatePlans(apiKey: string, input: Required<InspirationRequest>
   promptLines.push("预算是目标区间而不是页面装饰：¥100以内为0–100元，¥100–300为100–300元，¥300+为至少300元。不得建议超过有限预算的消费；地点价格未知时必须明确写“价格待确认”，不得声称符合预算；不得编造精确总价。最终地点组合与费用由服务端校验。");
   if (candidateLines.length) promptLines.push(`真实地点候选（只能从中选择）：\n${candidateLines.join("\n")}`);
   if (weather) {
-    promptLines.push(`高德天气预报（${weather.reportTime}发布）：${weatherPrompt(weather)}`);
+    promptLines.push(`${weather.source}预报（${weather.reportTime}发布）：${weatherPrompt(weather)}`);
     promptLines.push("只能在用户选择的时间落入上述预报日期时引用天气；超出预报范围或时间不确定时，不得推断天气。户外方案遇到雨雪或强风时必须给出室内替代。天气会变化，文案需提醒出发前复查。");
   }
   const prompt = promptLines.join("\n");

@@ -17,7 +17,7 @@ function plan(id='P1') { return {title:'坐下读书',summary:'安静阅读，�
 const body=()=>({plans:[plan('P1'),plan('P2'),plan('P3')]});
 const envelope=(value,reason='stop')=>({choices:[{finish_reason:reason,message:{content:typeof value==='string'?value:JSON.stringify(value)}}]});
 test('配置保留线上默认值，仅允许指定免费模型和官方网关',()=>{
-  assert.equal(ai.inspirationAIConfig({}).model,'lfm-2.5-2.6b-free');
+  assert.equal(ai.inspirationAIConfig({}).model,'ox-alpha');
   assert.equal(ai.inspirationAIConfig({AIHUBMIX_MODEL:'coding-glm-5.3-flash-free',AIHUBMIX_BASE_URL:'https://api.inferera.com/v1/'}).endpoint,'https://api.inferera.com/v1/chat/completions');
   for(const model of ['auto','glm-5.3-flash','unknown-free']) assert.throws(()=>ai.inspirationAIConfig({AIHUBMIX_MODEL:model}));
   for(const endpoint of ['http://aihubmix.com/v1','https://aihubmix.com.evil.test/v1','https://elsewhere.test/v1']) assert.throws(()=>ai.inspirationAIConfig({AIHUBMIX_BASE_URL:endpoint}));
@@ -46,7 +46,7 @@ function createRoute(options={}) {
   const DB={prepare:sql=>({bind(){return this;},first:async()=>sql.includes('RETURNING request_count')?{request_count:1}:null,run:async()=>({success:true})})};
   const api=module(read('app/api/inspiration/route.ts')+'\nexports.helpers={sanitizeInput,candidateCategories,parseCandidate,validatePlan,buildCandidateFallbackPlans,composePlacesForBudget,generatePlans};',{
     process:{env:{AIHUBMIX_API_KEY:'test-not-a-secret',AMAP_WEB_SERVICE_KEY:'test-not-a-secret',AIHUBMIX_MODEL:'coding-glm-5.3-flash-free',AIHUBMIX_BASE_URL:'https://api.inferera.com/v1',...options.environment}},
-    require:name=>name==='cloudflare:workers'?{env:{DB}}:name.includes('chatgpt-auth')?{getChatGPTUser:async()=>options.anonymous?null:{userId:'test-user'}}:name.includes('amap-weather')?{fetchAmapWeather:async()=>null,weatherPrompt:()=>''}:name.includes('recommendation-feedback')?feedback:ai,
+    require:name=>name==='cloudflare:workers'?{env:{DB}}:name.includes('chatgpt-auth')?{getChatGPTUser:async()=>options.anonymous?null:{userId:'test-user'}}:name.includes('amap-weather')?{fetchWeather:async()=>null,weatherPrompt:()=>''}:name.includes('recommendation-feedback')?feedback:ai,
     fetch:async(url,init)=>{
       calls.push({url:String(url),body:init?.body?JSON.parse(init.body):null});
       if(String(url).includes('restapi.amap.com')) return Response.json({status:'1',pois:options.empty?[]:Array.from({length:6},(_,i)=>({id:`poi-${i}`,name:`测试书店${i}`,location:`104.0${80+i},30.65`,address:'测试街道',distance:500+i*100,type:'书店',business:{cost:'30'}}))});
@@ -158,10 +158,12 @@ test('上游格式错误或不可用时降级真实地点，仍遵守少走路�
     assert.equal(api.calls.filter(c=>c.url.includes('inferera')).length,1);
   }
 });
-test('无真实候选时返回空状态，不调用AI或编造地点',async()=>{
-  const api=createRoute({empty:true});const response=await api.POST(new Request('http://local.test/api/inspiration',{method:'POST',body:JSON.stringify(input({special:'少走路'}))}));
-  const data=await response.json();assert.equal(data.code,'NO_MATCHING_PLACES');assert.equal(data.plans.length,0);
-  assert.equal(api.calls.filter(c=>c.url.includes('inferera')).length,0);
+test('高德无候选时生成不含具体商家的活动方向并明确标记待核验',async()=>{
+  const generic={plans:["阅读时光","室内展览","手作体验"].map(title=>({...plan(''),title}))};
+  const api=createRoute({empty:true,answer:envelope(generic)});const response=await api.POST(new Request('http://local.test/api/inspiration',{method:'POST',body:JSON.stringify(input({special:'少走路'}))}));
+  const data=await response.json();assert.equal(data.code,'UNVERIFIED_AI_FALLBACK');assert.equal(data.plans.length,3);
+  assert.ok(data.plans.every(item=>(item.places??[]).length===0&&(item.includedPlaces??[]).length===0&&item.distanceVerified===false));
+  assert.equal(api.calls.filter(c=>c.url.includes('inferera')).length,1);
 });
 test('候选不足3项时，切换方案按实际长度循环且单项禁用',()=>{
   const source=read('app/page.tsx');

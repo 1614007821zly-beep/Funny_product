@@ -1,8 +1,8 @@
 // Server-only: never accept a model or endpoint from the browser.
-const FREE_MODELS = ["lfm-2.5-2.6b-free", "coding-glm-5.3-flash-free"];
+const FREE_MODELS = ["ox-alpha", "lfm-2.5-2.6b-free", "coding-glm-5.3-flash-free"];
 const BASE_URLS = ["https://aihubmix.com/v1", "https://api.inferera.com/v1"];
 export function inspirationAIConfig(environment: Record<string, string | undefined>) {
-  const model = environment.AIHUBMIX_MODEL?.trim() || FREE_MODELS[0];
+  const model = environment.AIHUBMIX_MODEL?.trim() || "ox-alpha";
   const baseURL = (environment.AIHUBMIX_BASE_URL?.trim() || BASE_URLS[0]).replace(/\/$/, "");
   if (!FREE_MODELS.includes(model) || !BASE_URLS.includes(baseURL)) throw new Error("AI_CONFIG_INVALID");
   return { model, endpoint: `${baseURL}/chat/completions` };
