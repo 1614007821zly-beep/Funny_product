@@ -5,7 +5,7 @@ import { calendarDayStatus, holidaySource } from "../lib/china-holidays";
 import { emptyRecommendationFeedback, recommendationBrandKey, recommendationPlaces, recommendationDistance, planIdentity, selectUnseenPlans, type RecommendationFeedback } from "../lib/recommendation-feedback";
 import { normalizeScheduleFacts, readScheduleFacts, type ScheduleFacts } from "../lib/schedule-facts";
 
-type Screen = "welcome" | "age" | "profileSetup" | "connect" | "relationshipReady" | "contentReview" | "home" | "inspire" | "loading" | "results" | "plan" | "location" | "confirm" | "schedule" | "calendar" | "memory" | "memories" | "memoryCreate" | "task" | "taskHistory" | "profile" | "settings" | "notifications" | "privacy" | "storage" | "help" | "about" | "relationshipSafety" | "relationshipArchive" | "important" | "importantCreate";
+type Screen = "welcome" | "age" | "profileSetup" | "connect" | "relationshipReady" | "contentReview" | "home" | "inspire" | "loading" | "results" | "plan" | "location" | "confirm" | "schedule" | "calendar" | "memory" | "memories" | "memoryCreate" | "task" | "taskHistory" | "profile" | "settings" | "notifications" | "privacy" | "privacyPolicy" | "terms" | "accountDeletion" | "storage" | "help" | "about" | "relationshipSafety" | "relationshipArchive" | "important" | "importantCreate";
 type Tab = "home" | "inspire" | "calendar" | "settings";
 type Panel = "" | "edit" | "cancel" | "memoryEdit" | "retractMemory" | "deleteMemory" | "calendarAdd" | "profileEdit" | "cityEdit" | "normalExit" | "safetyExit" | "reportSafety" | "clearData";
 type Place = { id: string; name: string; address: string; location: string; type: string; distance: number | null; businessArea: string; rating: string; cost: string; openTimeToday: string; category: string; recommendationReasons: string[]; verifiedBy: "amap" | "saved" };
@@ -143,6 +143,9 @@ export default function Home() {
   const [preferencesBusy, setPreferencesBusy] = useState(false);
   const [feedbackDraft, setFeedbackDraft] = useState({ category: "产品建议", message: "" });
   const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [deletionPhrase, setDeletionPhrase] = useState("");
+  const [deletionBusy, setDeletionBusy] = useState(false);
+  const [deletionError, setDeletionError] = useState("");
   const [publicShareLink, setPublicShareLink] = useState<PublicShareLink | null>(null);
   const [managedShareLinks, setManagedShareLinks] = useState<ManagedShareLink[]>([]);
   const [shareBusy, setShareBusy] = useState(false);
@@ -241,7 +244,7 @@ export default function Home() {
   function showDateInCalendar(date: Date) { setMonthOffset(monthOffsetFromToday(date)); setSelectedDay(date.getDate()); }
   function importantDaysOnDate(dateKey: string) { return importantDays.filter(day => day.repeat_rule === "yearly" ? day.event_date.slice(5) === dateKey.slice(5) : day.event_date === dateKey); }
 
-  const step = useMemo(() => ({ welcome: 0, age: 0, profileSetup: 0, connect: 1, relationshipReady: 1, contentReview: 1, home: 2, inspire: 3, loading: 3, results: 4, plan: 5, location: 5, confirm: 5, schedule: 6, calendar: 7, memory: 8, memories: 8, memoryCreate: 8, task: 2, taskHistory: 2, profile: 2, settings: 2, notifications: 2, privacy: 2, storage: 2, help: 2, about: 2, relationshipSafety: 2, relationshipArchive: 2, important: 2, importantCreate: 2 }[screen]), [screen]);
+  const step = useMemo(() => ({ welcome: 0, age: 0, profileSetup: 0, connect: 1, relationshipReady: 1, contentReview: 1, home: 2, inspire: 3, loading: 3, results: 4, plan: 5, location: 5, confirm: 5, schedule: 6, calendar: 7, memory: 8, memories: 8, memoryCreate: 8, task: 2, taskHistory: 2, profile: 2, settings: 2, notifications: 2, privacy: 2, privacyPolicy: 2, terms: 2, accountDeletion: 2, storage: 2, help: 2, about: 2, relationshipSafety: 2, relationshipArchive: 2, important: 2, importantCreate: 2 }[screen]), [screen]);
 
   function go(next: Screen, replace = false) { if (screen === "loading" && next !== "results") { if (generationTimer.current) { window.clearTimeout(generationTimer.current); generationTimer.current = null; } requestController.current?.abort(); } if (!replace) history.current.push(screen); const method = replace ? "replaceState" : "pushState"; window.history[method]({ screen: next }, "", `#${next}`); setScreen(next); window.scrollTo({ top: 0, behavior: "smooth" }); }
   function back(fallback: Screen = "home") { const previous = history.current.pop(); if (previous) window.history.back(); else go(fallback, true); }
@@ -809,10 +812,13 @@ export default function Home() {
   function resetJourney() {
     setTaskLinked(false); setTaskContextActive(false); void loadSharedSchedule(true); void loadSharedExperiences(true); void loadMemories(true); go("home");
   }
-  function clearLocalSession() {
+  function clearAppBrowserData() {
     window.sessionStorage.removeItem(INSPIRATION_DRAFT_KEY);
     LEGACY_STORAGE_KEYS.forEach(key => window.localStorage.removeItem(key));
     ["love-diary-legacy-backup", "love-diary-legacy-plan-migrated", "love-diary-legacy-plan-dismissed", "love-diary-solo-user"].forEach(key => window.localStorage.removeItem(key));
+  }
+  function clearLocalSession() {
+    clearAppBrowserData();
     setChoices({ mood: "想放松", taMood: "和我一样", vibe: "安静", time: "今晚", budget: "¥100–300", space: "都可以", special: "" });
     setMyStates(["想放松"]); setCustomStates([]); setLocationPrefs({ city: "", district: "", districtSource: "none", radius: 5000, longitude: null, latitude: null, label: "尚未定位" });
     setLegacyPlan(null); setSoloMode(false); setAiPlans(null); setMorePlans([]); setSeenPlaceIds([]); setRecommendationFeedback(emptyRecommendationFeedback()); setRecommendationFeedbackOpen(false); setRatedPlanIdentity(undefined); setHasGenerated(false); setTaskContextActive(false); setTaskLinked(false); setMemoryContentRetracted(false); setRelationshipExited(false); setSafetyExitUsed(false); setPanel("");
@@ -950,6 +956,19 @@ export default function Home() {
     } catch (error) { notify(error instanceof Error ? error.message : "数据导出失败。"); }
   }
 
+  async function deleteMyAccount() {
+    if (deletionPhrase.trim() !== "注销账号") { setDeletionError("请输入“注销账号”完成确认。"); return; }
+    setDeletionBusy(true); setDeletionError("");
+    try {
+      const response = await fetch("/api/account", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirmation: deletionPhrase.trim() }) });
+      const data = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !data.ok) throw new Error(data.error || "账号注销暂未完成。");
+      clearAppBrowserData();
+      window.location.assign("/signout-with-chatgpt?return_to=%2F");
+    } catch (error) { setDeletionError(error instanceof Error ? error.message : "账号注销暂未完成，请稍后重试。"); }
+    finally { setDeletionBusy(false); }
+  }
+
   useEffect(() => {
     // The remote account snapshot is authoritative and arrives asynchronously.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -999,6 +1018,13 @@ export default function Home() {
     if (screen === "storage" && account?.authenticated) window.queueMicrotask(() => { void loadMyMedia(true); void loadManagedShareLinks(true); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, account?.authenticated]);
+
+  useEffect(() => {
+    if (screen === "accountDeletion") return;
+    // Destructive confirmation must never survive leaving this screen.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDeletionPhrase(""); setDeletionError("");
+  }, [screen]);
 
   useEffect(() => {
     if (["home","memories","memory"].includes(screen) && account?.authenticated) window.queueMicrotask(() => void loadMemories(true));
@@ -1168,13 +1194,13 @@ export default function Home() {
     <main className="prototype-shell" id="main-content">
       <aside className="prototype-notes">
         <div className="brand-mark">日</div>
-        <p className="kicker">恋爱日记 · V58 单人与共同体验</p>
+        <p className="kicker">恋爱日记 · V59 单人与共同体验</p>
         <h1>把一起生活的<br/>小事，好好留下。</h1>
         <p className="intro">从一个轻松的约会灵感开始，经过双方确认，成为共同安排，最后自然沉淀为回忆。</p>
         <ol className="journey" aria-label="体验流程">
           {["相遇", "我们", "灵感", "计划", "安排", "日历", "回忆"].map((label, i) => <li key={label} className={step >= i + 1 ? "done" : ""} aria-current={step === i + 1 ? "step" : undefined}><i aria-hidden="true">{step > i + 1 ? "✓" : i + 1}</i><span>{label}</span></li>)}
         </ol>
-        <p className="hint">V58 会根据你的合适与不合适反馈调整后续排序，并在服务异常时自动切换备用方案。</p>
+        <p className="hint">V59 在保留推荐反馈与异常恢复的同时，补齐协议、隐私政策和账号注销。</p>
       </aside>
 
       <section className="phone-stage">
@@ -1191,7 +1217,7 @@ export default function Home() {
               </div>
             )}
 
-            {screen === "age" && <div className="page formal-page onboarding-page"><header><Back onClick={() => back("welcome")}/><span>开始前确认</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">清楚，再继续</p><h2>{onboardingIntent==="solo"?"先从自己的生活开始。":"建立两个人的共同空间。"}</h2><p className="confirm-copy">恋爱日记仅面向已满 18 周岁的用户。AI 建议不会自动变成个人计划或共同事实。</p></section><section className="consent-card"><label htmlFor="age-confirmation" aria-label="确认已满 18 周岁"><input id="age-confirmation" type="checkbox" name="age-confirmation" checked={ageChecked} onChange={e=>{setAgeChecked(e.target.checked);setAgeError("");}}/><span><b>我已满 18 周岁</b><small>未满 18 周岁无法继续使用</small></span></label><label htmlFor="agreement-confirmation" aria-label="同意用户协议与隐私说明"><input id="agreement-confirmation" type="checkbox" name="agreement-confirmation" checked={agreementChecked} onChange={e=>{setAgreementChecked(e.target.checked);setAgeError("");}}/><span><b>我已阅读并同意用户协议与隐私说明</b><small>可随时在设置中再次查看</small></span></label><div className="consent-links"><button onClick={()=>notify("用户协议：个人计划与共同内容均须主动确认")}>用户协议</button><button onClick={()=>go("privacy")}>隐私与 AI 说明</button></div></section><button className="primary-button" onClick={()=>{if(!ageChecked||!agreementChecked){setAgeError("请确认年龄，并同意用户协议与隐私说明。");window.requestAnimationFrame(()=>ageErrorRef.current?.focus());return;}go("profileSetup");}}>继续填写资料 <Arrow/></button>{ageError&&<p ref={ageErrorRef} className="field-error" role="alert" tabIndex={-1}>{ageError}</p>}</div>}
+            {screen === "age" && <div className="page formal-page onboarding-page"><header><Back onClick={() => back("welcome")}/><span>开始前确认</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">清楚，再继续</p><h2>{onboardingIntent==="solo"?"先从自己的生活开始。":"建立两个人的共同空间。"}</h2><p className="confirm-copy">恋爱日记仅面向已满 18 周岁的用户。AI 建议不会自动变成个人计划或共同事实。</p></section><section className="consent-card"><label htmlFor="age-confirmation" aria-label="确认已满 18 周岁"><input id="age-confirmation" type="checkbox" name="age-confirmation" checked={ageChecked} onChange={e=>{setAgeChecked(e.target.checked);setAgeError("");}}/><span><b>我已满 18 周岁</b><small>未满 18 周岁无法继续使用</small></span></label><label htmlFor="agreement-confirmation" aria-label="同意用户协议与隐私政策"><input id="agreement-confirmation" type="checkbox" name="agreement-confirmation" checked={agreementChecked} onChange={e=>{setAgreementChecked(e.target.checked);setAgeError("");}}/><span><b>我已阅读并同意用户协议与隐私政策</b><small>可随时在设置中再次查看</small></span></label><div className="consent-links"><button onClick={()=>go("terms")}>用户协议</button><button onClick={()=>go("privacyPolicy")}>隐私政策</button></div></section><button className="primary-button" onClick={()=>{if(!ageChecked||!agreementChecked){setAgeError("请确认年龄，并同意用户协议与隐私政策。");window.requestAnimationFrame(()=>ageErrorRef.current?.focus());return;}go("profileSetup");}}>继续填写资料 <Arrow/></button>{ageError&&<p ref={ageErrorRef} className="field-error" role="alert" tabIndex={-1}>{ageError}</p>}</div>}
 
             {screen === "profileSetup" && <div className="page formal-page onboarding-page"><header><Back onClick={()=>back("age")}/><span>{onboardingIntent==="invite"?"我的资料与邀请备注":"确认我的资料"}</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">先从自己开始</p><h2>{onboardingIntent==="solo"?<>先体验，再决定<br/>何时邀请 TA。</>:<>你的资料由你确认，<br/>TA 的资料交给 TA。</>}</h2><p className="confirm-copy">{onboardingIntent==="solo"?"以后可随时邀请伴侣；已有灵感和个人计划不会自动向 TA 公开。":"双方使用各自账号确认资料；关系建立后，也不能代替对方修改个人资料。"}</p></section><section className="create-form"><p className="form-section-label">我的资料</p><label>我的昵称 <em>必填</em><input name="my-name" autoComplete="name" spellCheck={false} maxLength={30} value={profile.name} onChange={e=>{setProfile({...profile,name:e.target.value});setProfileError("");}}/></label><label>我的生日 <small>选填，仅由我管理</small><input name="my-birthday" autoComplete="bday" inputMode="numeric" maxLength={20} value={profile.birthday} onChange={e=>setProfile({...profile,birthday:e.target.value})}/></label><label>当前城市 <small>可随时临时切换</small><input name="city" autoComplete="address-level2" maxLength={40} value={profile.city} onChange={e=>setProfile({...profile,city:e.target.value})}/></label>{onboardingIntent==="invite"&&<><p className="form-section-label partner-label">邀请备注</p><label>怎么称呼 TA <em>必填</em><input name="partner-invite-note" autoComplete="off" spellCheck={false} maxLength={30} value={partnerProfile.name} onChange={e=>{setPartnerProfile({...partnerProfile,name:e.target.value,birthday:""});setProfileError("");}}/></label><p className="partner-note">这只是邀请备注。TA 加入后，将显示 TA 自己确认的昵称。</p></>}</section>{profileError&&<p ref={profileErrorRef} className="field-error" role="alert" tabIndex={-1}>{profileError}</p>}<button className="primary-button" disabled={accountBusy} onClick={()=>void saveProfileAndContinue()}>{accountBusy?"正在保存…":onboardingIntent==="solo"?"保存并开始体验":onboardingIntent==="invite"?"保存并生成真实邀请":"保存并输入邀请码"} <Arrow/></button></div>}
 
@@ -1360,7 +1386,7 @@ export default function Home() {
 
             {screen === "taskHistory" && <div className="page formal-page"><header><Back onClick={() => back("home")}/><span>共同任务</span><i aria-hidden="true"/></header><section className="page-intro"><p className="kicker">当前任务</p><h2>偶尔想到一件，<br/>值得一起做的小事。</h2></section>{activeTask?<button className="task-history-current" onClick={() => go("task")}><span>♫</span><div><b>{activeTask.title}</b><small>{activeTask.status==="pending_partner"?"等待接受":activeTask.status==="completion_pending"?"等待完成确认":"进行中"}</small></div><i aria-hidden="true">›</i></button>:<div className="empty-inline"><span>○</span><p>当前没有进行中的共同任务</p></div>}<p className="month-title">历史任务</p>{tasks.filter(task=>["completed","cancelled"].includes(task.status)).length?tasks.filter(task=>["completed","cancelled"].includes(task.status)).map(task=><div className="history-row" key={task.id}><span>{task.status==="completed"?"✓":"↻"}</span><div><b>{task.title}</b><small>{task.status==="completed"?"双方已确认完成":"已结束"}</small></div></div>):<div className="empty-inline"><span>○</span><p>还没有已完成或已结束的任务</p></div>}</div>}
 
-            {screen === "settings" && <div className="page tab-page formal-page settings-page"><header><div><p className="kicker">恋爱日记</p><h2>设置</h2></div><i aria-hidden="true"/></header><button type="button" className="settings-profile" onClick={() => go("profile")}><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{profile.name}</b><small>{hasRelationship?`与${partnerProfile.name}已连接`:"单人体验中 · 内容仅自己可见"}</small></div><i aria-hidden="true">›</i></button><section className="settings-group"><SettingRow icon="♢" label={hasRelationship?"我们的资料":"我的资料"} onClick={() => go("profile")}/><SettingRow icon="◌" label={hasRelationship?"我们的重要日子":"我的重要日子"} onClick={() => go("important")}/>{!hasRelationship&&<SettingRow icon="♡" label="邀请 TA 一起使用" value="随时可以" onClick={() => {setOnboardingIntent("invite");go("connect");}}/>}</section><section className="settings-group">{hasRelationship&&<SettingRow icon="♡" label="关系与数据安全" value="可随时退出" onClick={() => go("relationshipSafety")}/>}<SettingRow icon="♢" label="通知与提醒" onClick={() => go("notifications")}/><SettingRow icon="◉" label="隐私与 AI 数据说明" onClick={() => go("privacy")}/><SettingRow icon="▢" label="照片与存储" onClick={() => go("storage")}/></section><section className="settings-group"><SettingRow icon="?" label="帮助与反馈" onClick={() => go("help")}/><SettingRow icon="○" label="关于恋爱日记" value="V58" onClick={() => go("about")}/></section>{bottomNav("settings")}</div>}
+            {screen === "settings" && <div className="page tab-page formal-page settings-page"><header><div><p className="kicker">恋爱日记</p><h2>设置</h2></div><i aria-hidden="true"/></header><button type="button" className="settings-profile" onClick={() => go("profile")}><div className="avatar a">{profile.name.slice(0,1)}</div><div><b>{profile.name}</b><small>{hasRelationship?`与${partnerProfile.name}已连接`:"单人体验中 · 内容仅自己可见"}</small></div><i aria-hidden="true">›</i></button><section className="settings-group"><SettingRow icon="♢" label={hasRelationship?"我们的资料":"我的资料"} onClick={() => go("profile")}/><SettingRow icon="◌" label={hasRelationship?"我们的重要日子":"我的重要日子"} onClick={() => go("important")}/>{!hasRelationship&&<SettingRow icon="♡" label="邀请 TA 一起使用" value="随时可以" onClick={() => {setOnboardingIntent("invite");go("connect");}}/>}</section><section className="settings-group">{hasRelationship&&<SettingRow icon="♡" label="关系与数据安全" value="可随时退出" onClick={() => go("relationshipSafety")}/>}<SettingRow icon="♢" label="通知与提醒" onClick={() => go("notifications")}/><SettingRow icon="◉" label="隐私与 AI 数据说明" onClick={() => go("privacy")}/><SettingRow icon="▢" label="照片与存储" onClick={() => go("storage")}/></section><section className="settings-group"><SettingRow icon="§" label="用户协议" onClick={() => go("terms")}/><SettingRow icon="◈" label="隐私政策" onClick={() => go("privacyPolicy")}/><SettingRow icon="×" label="注销账号" value="永久删除" onClick={() => go("accountDeletion")}/></section><section className="settings-group"><SettingRow icon="?" label="帮助与反馈" onClick={() => go("help")}/><SettingRow icon="○" label="关于恋爱日记" value="V59" onClick={() => go("about")}/></section>{bottomNav("settings")}</div>}
 
             {screen === "notifications" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>通知与提醒</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">只提醒重要的事</p><h2>不让{hasRelationship?"共同":"日常"}生活，<br/>变成通知压力。</h2></section><section className="settings-group">{hasRelationship&&<ToggleRow label="共同安排提醒" note="开始前与变更时提醒" value={preferences.scheduleReminders} disabled={preferencesBusy} onChange={value=>void updatePreference("scheduleReminders",value)}/>}<ToggleRow label="重要日子提醒" note={hasRelationship?"按双方设置的提前时间提醒":"按你设置的提前时间提醒"} value={preferences.importantDayReminders} disabled={preferencesBusy} onChange={value=>void updatePreference("importantDayReminders",value)}/>{hasRelationship&&<ToggleRow label="TA 的状态变化" note="接受安排、完成确认" value={preferences.partnerUpdates} disabled={preferencesBusy} onChange={value=>void updatePreference("partnerUpdates",value)}/>}</section><p className="policy-note">设置保存在你的账户中；不会发送连续签到、任务催促或关系评分通知。</p></div>}
 
@@ -1370,13 +1396,22 @@ export default function Home() {
 
             {screen === "help" && <div className="page formal-page"><header><Back onClick={() => back("settings")}/><span>帮助与反馈</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">先回答最常见的问题</p><h2>遇到问题，<br/>可以直接告诉我们。</h2></section><section className="help-list"><details><summary>为什么 AI 灵感不会自动进入日历？</summary><p>AI 只提供建议。只有你主动采用并确认日期、时间后，才会形成个人计划或共同安排。</p></details><details><summary>单人计划会自动分享给 TA 吗？</summary><p>不会。建立关系后仍需由你逐项选择是否发送给 TA。</p></details><details><summary>撤回照片后会发生什么？</summary><p>在线原文件会删除，当前关系成员不再能访问；平台无法删除对方此前保存的离线副本或截屏。</p></details></section><section className="feedback-form"><label>问题类型<select value={feedbackDraft.category} onChange={event=>setFeedbackDraft({...feedbackDraft,category:event.target.value})}><option>产品建议</option><option>功能异常</option><option>隐私与安全</option><option>其他</option></select></label><label>具体情况<textarea maxLength={1000} value={feedbackDraft.message} onChange={event=>setFeedbackDraft({...feedbackDraft,message:event.target.value})} placeholder="请描述发生了什么、你期待怎样改进"/></label><p>{feedbackDraft.message.length}/1000</p><button className="primary-button" disabled={feedbackBusy||!feedbackDraft.message.trim()} onClick={()=>void submitFeedback()}>{feedbackBusy?"正在提交…":"提交反馈"} <Arrow/></button></section></div>}
 
-            {screen === "about" && <div className="page formal-page about-page"><header><Back onClick={() => back("settings")}/><span>关于恋爱日记</span><i aria-hidden="true"/></header><div className="about-mark">♡</div><section className="page-intro compact"><p className="kicker">V58 · 会根据反馈变得更懂你</p><h2>让共同生活，<br/>更容易被认真对待。</h2><p className="confirm-copy">恋爱日记帮助两个人从灵感走到正式安排，再把真实发生的事自然留成回忆。AI 只提供建议，不替任何人确认事实或评价关系。</p></section><section className="info-group"><InfoRow label="当前版本" value="V58"/><InfoRow label="推荐反馈" value="只记录必要的排序信号"/><InfoRow label="运行监测" value="不含聊天、精确位置或密钥"/><InfoRow label="数据原则" value="个人所有 · 双方确认"/></section><a className="secondary-button map-link" href={holidaySource.url} target="_blank" rel="noreferrer">查看 2026 年节假日来源 <Arrow/></a></div>}
+            {screen === "about" && <div className="page formal-page about-page"><header><Back onClick={() => back("settings")}/><span>关于恋爱日记</span><i aria-hidden="true"/></header><div className="about-mark">♡</div><section className="page-intro compact"><p className="kicker">V59 · 账号与隐私控制更完整</p><h2>让共同生活，<br/>更容易被认真对待。</h2><p className="confirm-copy">恋爱日记帮助两个人从灵感走到正式安排，再把真实发生的事自然留成回忆。AI 只提供建议，不替任何人确认事实或评价关系。</p></section><section className="info-group"><InfoRow label="当前版本" value="V59"/><InfoRow label="账号注销" value="永久删除个人云端数据"/><InfoRow label="推荐反馈" value="只记录必要的排序信号"/><InfoRow label="运行监测" value="不含聊天、精确位置或密钥"/><InfoRow label="数据原则" value="个人所有 · 双方确认"/></section><a className="secondary-button map-link" href={holidaySource.url} target="_blank" rel="noreferrer">查看 2026 年节假日来源 <Arrow/></a></div>}
 
             {screen === "relationshipSafety" && <div className="page formal-page safety-page"><header><Back onClick={() => back("settings")}/><span>关系与数据安全</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">离开不需要许可</p><h2>你的安全，<br/>不由对方决定。</h2><p className="confirm-copy">任何一方都能独立退出。共同空间解散可以协商，但不能阻止个人离开。</p></section><section className="safety-status"><span>✓</span><div><b>当前共享权限正常</b><p>照片、文字与 AI 衍生内容均记录来源和撤回状态。</p></div></section><section className="settings-group"><SettingRow icon="◎" label="查看我的内容与授权" value="照片与分享" onClick={()=>go("storage")}/><SettingRow icon="⇩" label="导出我的数据" value="不含 TA 已撤回内容" onClick={()=>void exportMyData()}/><SettingRow icon="!" label="举报骚扰或内容滥用" onClick={()=>setPanel("reportSafety")}/></section><section className="safety-explainer"><b>退出后保留什么？</b><p>你自己的内容和必要共同事实可形成只读归档；TA 撤回的内容会显示为占位说明。新关系永远不能访问旧关系数据。</p></section><button className="secondary-button" onClick={()=>setPanel("normalExit")}>退出当前关系</button><button className="danger-button safety-danger" onClick={()=>setPanel("safetyExit")}>立即退出并保护我的内容</button><p className="policy-note">安全退出会先撤销共享、下载和历史文件链接，再通知对方。</p></div>}
 
             {screen === "relationshipArchive" && <div className="page formal-page archive-page"><header><span/><span>{safetyExitUsed?"安全退出完成":"旧关系归档"}</span><i aria-hidden="true"/></header><div className="success-symbol protected">✓</div><section className="page-intro compact"><p className="kicker">{safetyExitUsed?"共享权限已撤销":"你已独立退出"}</p><h2>{safetyExitUsed?"你的内容，已受到保护。":"这段记录，现在只读保存。"}</h2><p className="confirm-copy">退出无需对方确认。对方已收到不含举报详情的通知；新关系无法访问这里的数据。</p></section><section className="protection-checklist"><div><span>✓</span><p><b>敏感内容已撤回</b><small>对方无法继续查看或下载</small></p></div><div><span>✓</span><p><b>历史访问链接已失效</b><small>离线截屏与已导出文件无法远程删除</small></p></div><div><span>✓</span><p><b>AI 衍生内容已清理</b><small>关系评价、摘要和画像不再保留</small></p></div></section>{!safetyExitUsed&&<section className="archive-card"><p className="kicker">只读共同事实</p><b>晚风散步与河畔小酒馆</b><small>{eventDateLong} · 双方曾确认</small><p>个人文字和照片仍受各自撤回权限控制。</p></section>}<button className="primary-button" onClick={()=>{setRelationshipExited(false);setSafetyExitUsed(false);history.current=[];go("connect",true);}}>建立新的关系 <Arrow/></button><button className="ghost-button" onClick={()=>notify("旧关系数据不会带入新的共同空间")}>了解数据隔离</button></div>}
 
             {screen === "task" && <div className="page task-page"><header><Back onClick={() => back("home")}/><span>{hasRelationship?"共同任务":"共同体验预览"}</span>{hasRelationship?<button className="text-button" onClick={()=>go("taskHistory")}>历史</button>:<i aria-hidden="true"/>}</header><div className="task-hero"><span>{taskDone&&!activeTask?"✓":"♫"}</span><p className="kicker">{hasRelationship?(activeTask?"当前共同任务":"任务灵感"):"建立关系后可开启"}</p><h2>交换一首<br/>最近常听的歌</h2><p>不是为了猜对彼此，而是借一首歌，听见最近没有说出口的心情。</p></div><div className="task-rule"><span>01</span><p><b>各自选一首</b><br/>先不要告诉对方原因</p><span>02</span><p><b>一起完整听完</b><br/>再分享为什么选择它</p></div>{!hasRelationship?<div className="task-actions"><div className="accepted-badge">这是共同功能预览，不会记录完成状态</div><button className="primary-button" onClick={()=>{setOnboardingIntent("invite");go("connect");}}>邀请 TA 一起使用 <Arrow/></button><button className="ghost-button" onClick={()=>go("home")}>先继续单人体验</button></div>:taskLinked?<div className="task-actions"><div className="linked-plan-preview"><b>已规划</b><p>{currentPlan.title}</p><small>{eventMonthDay} 18:30 · 当前关联安排</small></div><button className="primary-button" onClick={()=>go("schedule")}>查看安排 <Arrow/></button></div>:!activeTask?<div className="task-actions"><button className="primary-button" disabled={taskBusy} onClick={()=>void startSharedTask()}>{taskBusy?"正在发送…":"发给 TA 一起做"} <Arrow/></button><p className="policy-note">TA 接受后才会成为双方的共同任务。</p></div>:activeTask.status==="pending_partner"?<div className="task-actions"><div className="accepted-badge">{isTaskCreator?"等待 TA 接受":"TA 邀请你一起完成"}</div>{!isTaskCreator&&<button className="primary-button" disabled={taskBusy} onClick={()=>void updateSharedTask("accept")}>{taskBusy?"正在确认…":"接受这个任务"} <Arrow/></button>}<button className="ghost-button" disabled={taskBusy} onClick={()=>void updateSharedTask("cancel")}>结束这项任务</button></div>:activeTask.status==="completion_pending"?<div className="task-actions"><div className="accepted-badge">{isTaskCompletionRequester?"等待 TA 确认完成":"TA 已确认完成，等待你的确认"}</div>{!isTaskCompletionRequester&&<button className="primary-button" disabled={taskBusy} onClick={()=>void updateSharedTask("confirm_complete")}>{taskBusy?"正在确认…":"确认双方已完成"} <Arrow/></button>}</div>:<div className="task-actions"><div className="accepted-badge">✓ 双方已接受这项任务</div><button className="primary-button" onClick={() => {setTaskContextActive(true);setChoices({...choices, mood:"想放松"}); go("inspire");}}>去规划一个晚上 <Arrow/></button><button className="ghost-button" disabled={taskBusy} onClick={()=>void updateSharedTask("request_complete")}>我已经完成</button></div>}</div>}
+            {screen === "terms" && (
+              <TermsPage onBack={() => back("settings")}/>
+            )}
+            {screen === "privacyPolicy" && (
+              <PrivacyPolicyPage onBack={() => back("settings")} onOpenAiPrivacy={() => go("privacy")}/>
+            )}
+            {screen === "accountDeletion" && (
+              <AccountDeletionPage hasRelationship={hasRelationship} phrase={deletionPhrase} busy={deletionBusy} error={deletionError} onPhraseChange={value=>{setDeletionPhrase(value);setDeletionError("");}} onExport={()=>void exportMyData()} onDelete={()=>void deleteMyAccount()} onBack={()=>back("settings")}/>
+            )}
           </div>
         </div>
       </section>
@@ -1387,6 +1422,42 @@ export default function Home() {
       <div className="toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="toast">{toast}</div>}</div>
     </main>
   );
+}
+
+function TermsPage({ onBack }: { onBack: () => void }) {
+  return <div className="page formal-page legal-page"><header><Back onClick={onBack}/><span>用户协议</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">测试版用户协议</p><h2>先说清楚，<br/>再一起使用。</h2><p className="legal-date">更新与生效日期：2026 年 9 月 3 日</p></section><article className="legal-document">
+    <section><h3>1. 协议范围</h3><p>本协议适用于“恋爱日记”测试版服务。当前服务由恋爱日记项目提供，仍处于个人开发者测试阶段；商业化或运营主体发生变化时，我们会更新主体信息和协议，并在重要变化生效前提示你。</p></section>
+    <section><h3>2. 使用条件与账号</h3><p>服务仅面向已满 18 周岁的用户。你需要使用自己的 ChatGPT 账号登录，并对账号下的操作负责。请勿共用账号、冒用他人身份或代替伴侣确认个人资料和共同事实。</p></section>
+    <section><h3>3. 个人内容与共同内容</h3><p>个人计划默认仅本人可见；建立关系后，仍需由你逐项选择是否分享。共同安排、重要日子、任务和完成状态须经过相应确认。任何一方都可独立退出关系，另一方不能阻止。</p></section>
+    <section><h3>4. AI、地点与天气信息</h3><p>AI 灵感仅供参考，不构成事实、承诺、医疗或其他专业意见，也不会自动进入日历。地点、价格、距离、营业时间、交通和天气来自第三方或模型推断，可能延迟或不完整；出发前请向地点经营者或官方渠道再次确认。</p></section>
+    <section><h3>5. 你上传的内容</h3><p>你应当有权上传照片和文字，并尊重伴侣及第三人的肖像、隐私和知识产权。你保留对原创内容的相应权利，同时授权服务为存储、同步和向你指定的关系成员展示这些内容而进行必要处理。</p></section>
+    <section><h3>6. 不允许的行为</h3><ul><li>上传违法、侵权、骚扰、威胁或未经同意的私密内容；</li><li>利用服务跟踪、控制、冒充或伤害他人；</li><li>攻击、绕过权限、批量抓取或干扰服务运行。</li></ul></section>
+    <section><h3>7. 服务变更与中断</h3><p>测试版可能调整功能、暂停维护或出现第三方服务中断。我们会尽力保护已保存的数据并提供明确的失败提示，但不保证服务永久不间断。对影响你权益的重要变化，我们会以产品内提示等合理方式告知。</p></section>
+    <section><h3>8. 退出与注销</h3><p>你可以退出当前关系而保留账号，也可以在“设置 → 注销账号”中永久删除账号。注销会删除你的个人资料与个人内容，并结束当前关系；伴侣仍可保留其本人内容和已经由双方确认的必要共同事实。</p></section>
+    <section><h3>9. 反馈与争议</h3><p>如有账号、内容或安全问题，请通过“设置 → 帮助与反馈”联系我们。我们会根据问题类型处理。协议的订立、履行和解释适用中华人民共和国法律；产生争议时，双方应先友好协商。</p></section>
+    <p className="legal-footnote">当前为公开测试版协议。正式商业化前将根据实际运营主体、服务范围与数据链路进行专业法律审核和更新。</p>
+  </article></div>;
+}
+
+function PrivacyPolicyPage({ onBack, onOpenAiPrivacy }: { onBack: () => void; onOpenAiPrivacy: () => void }) {
+  return <div className="page formal-page legal-page"><header><Back onClick={onBack}/><span>隐私政策</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">测试版隐私政策</p><h2>只处理完成服务<br/>真正需要的数据。</h2><p className="legal-date">更新与生效日期：2026 年 9 月 3 日</p></section><article className="legal-document">
+    <section><h3>1. 我们处理哪些信息</h3><ul><li><b>账号信息：</b>ChatGPT 登录提供的稳定用户标识、邮箱和可选姓名；</li><li><b>你主动填写的资料：</b>昵称、生日、城市及关系邀请；</li><li><b>产品内容：</b>个人或共同安排、重要日子、任务、回忆、照片和分享状态；</li><li><b>灵感条件：</b>状态、氛围、预算、时间、地点范围及你主动填写的特别照顾；</li><li><b>反馈和偏好：</b>提醒开关、合适/不合适原因与帮助反馈；</li><li><b>运行数据：</b>服务来源、响应时间、固定失败类型和备用方案是否触发。</li></ul></section>
+    <section><h3>2. 为什么处理这些信息</h3><p>用于识别你的账号、保存并同步内容、建立双方授权的共同空间、生成灵感、展示地点与天气、发送你选择的提醒、处理反馈、保护账号安全和改善服务稳定性。不会使用你的关系内容生成忠诚度、分手概率或心理诊断。</p></section>
+    <section><h3>3. 定位与自由输入</h3><p>精确位置仅在你主动允许定位时用于当次附近地点查询，不写入个人资料、运行监测或网址。未主动填写“特别照顾”时不会向 AI 发送该字段；请勿在自由输入中填写姓名、电话、身份证号或其他高度敏感信息。</p></section>
+    <section><h3>4. 第三方服务</h3><p>为完成服务，数据可能由 ChatGPT 登录、OpenAI Sites 托管、Cloudflare D1/R2 存储、AIHubMix/所选模型生成、高德地点与天气，以及 Open-Meteo 备用天气服务处理。我们只发送完成当次功能所需的字段；密钥只保存在服务端，运行监测不记录聊天文字、精确位置或伴侣私密内容。</p><p>部分第三方服务可能在境外处理数据。正式商业化前，我们会根据实际链路补充运营主体、处理地点、单独告知与同意机制；测试期间请勿输入高度敏感信息。</p></section>
+    <section><h3>5. 伴侣之间如何共享</h3><p>个人计划默认仅本人可见。共同内容仅对当前关系成员开放，并按创建、接受、完成和撤回状态展示。关系退出后停止新的共享；对方已保存的离线副本或截图无法由平台远程删除。</p></section>
+    <section><h3>6. 保存期限</h3><p>账号与产品内容在账号存续和功能所需期间保存；照片在你撤回或注销时删除在线文件；公开分享链接到期或撤回后失效；匿名运行监测最多保留 30 天。法律要求另有保存期限的，按法律规定处理并限制用途。</p></section>
+    <section><h3>7. 你的权利</h3><p>你可以查看和修改资料、导出自己的数据、撤回照片与分享、关闭提醒、退出关系，并在设置中注销账号。若功能内无法完成更正、删除或投诉，请通过“帮助与反馈”联系我们。</p></section>
+    <section><h3>8. 注销后如何处理</h3><p>注销会删除你的账号资料、个人计划、个人回忆、照片、反馈、偏好和有效分享，并结束当前关系。双方已确认的共同事实可保留给伴侣，但会移除你的个人文字、照片与账号关联；重新登录会被视为新账号，不能恢复旧关系。</p></section>
+    <section><h3>9. 安全与未成年人</h3><p>我们使用身份校验、服务端权限判断、私有文件访问、输入限制与最小化运行监测等措施保护数据。发生可能影响你权益的安全事件时，将依法采取补救和告知措施。本服务不面向未满 18 周岁的用户。</p></section>
+    <section><h3>10. 联系与更新</h3><p>隐私问题可通过“设置 → 帮助与反馈”选择“隐私与安全”提交。重要政策变化会通过产品内提示等合理方式告知，不会用笼统授权替代必要的再次确认。</p></section>
+    <button className="secondary-button legal-related" onClick={onOpenAiPrivacy}>查看 AI 数据使用原则 <Arrow/></button>
+    <p className="legal-footnote">当前为公开测试版隐私政策，不代表已经完成商业化运营所需的全部合规程序。</p>
+  </article></div>;
+}
+
+function AccountDeletionPage({ hasRelationship, phrase, busy, error, onPhraseChange, onExport, onDelete, onBack }: { hasRelationship: boolean; phrase: string; busy: boolean; error: string; onPhraseChange: (value: string) => void; onExport: () => void; onDelete: () => void; onBack: () => void }) {
+  return <div className="page formal-page deletion-page"><header><Back onClick={onBack}/><span>注销账号</span><i aria-hidden="true"/></header><section className="page-intro compact"><p className="kicker">永久且不可恢复</p><h2>先确认会删除什么。</h2><p className="confirm-copy">如需留存内容，请先导出数据。注销不是退出登录，也不能在之后恢复旧关系。</p></section><section className="deletion-summary"><h3>注销后会立即发生</h3><ul><li>删除你的资料、个人计划、个人回忆、照片、反馈和使用偏好；</li><li>撤销你创建的有效公开分享链接；</li>{hasRelationship&&<li>结束当前关系，双方停止继续同步；</li>}<li>退出当前 ChatGPT 登录会话。</li></ul></section><section className="deletion-boundary"><b>不会替伴侣删除什么？</b><p>伴侣自己的资料与个人内容仍由 TA 管理。双方已确认的共同事实可在 TA 账号中保留，但你的个人文字、照片和账号关联会移除。平台无法远程删除别人已经保存的离线副本或截图。</p></section><button className="secondary-button" disabled={busy} onClick={onExport}>先导出我的数据 <Arrow/></button><label className="deletion-confirm">输入“注销账号”确认<input name="account-deletion-confirmation" autoComplete="off" value={phrase} onChange={event=>onPhraseChange(event.target.value)} placeholder="注销账号" aria-describedby="deletion-help"/></label><p id="deletion-help" className="policy-note">只有完全匹配后，永久注销按钮才会启用。</p>{error&&<p className="field-error" role="alert">{error}</p>}<button className="danger-button" disabled={busy||phrase.trim()!=="注销账号"} onClick={onDelete}>{busy?"正在删除账号与云端数据…":"永久注销账号"}</button></div>;
 }
 
 function Choice({ title, options, value, setValue }: { title: string; options: string[]; value: string; setValue: (v: string) => void }) {

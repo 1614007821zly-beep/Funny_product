@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { getChatGPTUser } from "../../chatgpt-auth";
+import { deleteAccountData } from "../../../lib/account-deletion";
 
 export const dynamic = "force-dynamic";
 
@@ -47,4 +48,21 @@ export async function POST(request: Request) {
   if (!identity) return Response.json({ error: "请先登录后再保存资料。" }, { status: 401 });
   await env.DB.prepare("UPDATE users SET onboarding_completed_at=COALESCE(onboarding_completed_at,?) WHERE id=?").bind(new Date().toISOString(), identity.userId).run();
   return Response.json({ ok: true, authenticated: true, ...(await accountSnapshot(identity.userId)) });
+}
+
+export async function DELETE(request: Request) {
+  const identity = await getChatGPTUser();
+  if (!identity) return Response.json({ error: "请先登录后再注销账号。" }, { status: 401 });
+  let body: { confirmation?: string };
+  try { body = await request.json() as typeof body; }
+  catch { return Response.json({ error: "请求内容不是有效的 JSON。" }, { status: 400 }); }
+  if (body.confirmation !== "注销账号") return Response.json({ error: "请输入“注销账号”完成确认。" }, { status: 400 });
+  const user = await env.DB.prepare("SELECT id FROM users WHERE id=? LIMIT 1").bind(identity.userId).first<{ id: string }>();
+  if (!user) return Response.json({ error: "账号不存在或已经注销。" }, { status: 404 });
+  try {
+    await deleteAccountData(env.DB, env.MEDIA, identity.userId, new Date().toISOString());
+    return Response.json({ ok: true });
+  } catch {
+    return Response.json({ error: "账号注销暂未完成，账号仍可继续登录。请稍后重试或通过帮助与反馈联系我们。" }, { status: 503 });
+  }
 }

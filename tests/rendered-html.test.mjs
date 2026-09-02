@@ -14,14 +14,14 @@ async function render() {
   );
 }
 
-test("server-renders the Love Diary V58 experience", async () => {
+test("server-renders the Love Diary V59 experience", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
-  assert.match(html, /<title>恋爱日记 V58/);
+  assert.match(html, /<title>恋爱日记 V59/);
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
@@ -63,6 +63,7 @@ test("keeps accessibility and interaction safeguards in source", async () => {
     readFile(new URL("../drizzle/0010_reflective_adam_warlock.sql", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
   ]);
+  const accountDeletion = await readFile(new URL("../lib/account-deletion.ts", import.meta.url), "utf8");
 
   assert.match(layout, /className="skip-link"/);
   assert.match(page, /role="dialog"/);
@@ -125,6 +126,17 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.match(accountApi, /authenticated: true/);
   assert.match(accountApi, /onboardingCompleted: Boolean/);
   assert.match(accountApi, /onboarding_completed_at=COALESCE/);
+  assert.match(accountApi, /export async function DELETE/);
+  assert.match(accountApi, /body\.confirmation !== "注销账号"/);
+  assert.match(accountApi, /deleteAccountData/);
+  assert.match(accountDeletion, /DELETE FROM users WHERE id=\?/);
+  assert.match(accountDeletion, /DELETE FROM user_media WHERE owner_user_id=\?/);
+  assert.match(accountDeletion, /UPDATE schedules SET/);
+  assert.doesNotMatch(accountDeletion, /DELETE FROM service_runs/);
+  assert.match(page, /测试版用户协议/);
+  assert.match(page, /测试版隐私政策/);
+  assert.match(page, /永久注销账号/);
+  assert.match(page, /请输入“注销账号”完成确认/);
   assert.match(inviteApi, /expiresAt/);
   assert.match(joinApi, /env\.DB\.batch/);
   assert.match(leaveApi, /UPDATE relationship_members SET left_at=\? WHERE relationship_id=\? AND left_at IS NULL/);
