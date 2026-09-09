@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { fetchWeather } from "../../../lib/amap-weather";
 import { classifyServiceFailure, recordServiceRuns, serviceElapsed } from "../../../lib/service-monitoring";
 import { getChatGPTUser } from "../../chatgpt-auth";
@@ -8,7 +9,8 @@ export async function GET(request: Request) {
   const startedAt = Date.now();
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录后再查看天气。", code: "AUTH_REQUIRED" }, 401);
-  const apiKey = process.env.AMAP_WEB_SERVICE_KEY;
+  const workerEnv = env as unknown as Record<string, string | undefined>;
+  const apiKey = workerEnv.AMAP_WEB_SERVICE_KEY ?? process.env["AMAP_WEB_SERVICE_KEY"];
   const city = new URL(request.url).searchParams.get("city")?.trim().slice(0, 40) ?? "";
   if (!city) return json({ error: "请先选择城市。", code: "CITY_REQUIRED" }, 400);
   try {

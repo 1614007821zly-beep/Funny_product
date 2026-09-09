@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://love-diary-v1-prototype.linyu518.chatgpt.site"),
+  metadataBase: new URL("https://love-diary.1614007821zly.workers.dev"),
   title: "恋爱日记 V59 · 账号与隐私控制更完整",
   description: "恋爱日记 V59：补齐用户协议、隐私政策与安全的账号注销，让每个人都能清楚管理自己的数据。",
   themeColor: "#fbfaf8",

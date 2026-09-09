@@ -10,7 +10,7 @@ test("updates the inspiration area from authenticated reverse geolocation", asyn
   ]);
 
   assert.match(route, /getChatGPTUser/);
-  assert.match(route, /process\.env\.AMAP_WEB_SERVICE_KEY/);
+  assert.match(route, /workerEnv\.AMAP_WEB_SERVICE_KEY/);
   assert.match(route, /INVALID_COORDINATES/);
   assert.match(route, /recordServiceRuns/);
   assert.match(route, /failureType: classifyServiceFailure/);

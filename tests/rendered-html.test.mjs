@@ -25,7 +25,8 @@ test("server-renders the Love Diary V59 experience", async () => {
   assert.match(html, /href="#main-content">跳到主要内容<\/a>/);
   assert.match(html, /<main class="prototype-shell" id="main-content">/);
   assert.match(html, /aria-live="polite"/);
-  assert.match(html, /使用 ChatGPT 登录/);
+  assert.match(html, /登录并继续/);
+  assert.match(html, />注册<\/button>/);
   assert.doesNotMatch(html, /codex-preview|Building your site|react-loading-skeleton/i);
 });
 
@@ -81,9 +82,9 @@ test("keeps accessibility and interaction safeguards in source", async () => {
   assert.doesNotMatch(css, /outline:\s*(?:none|0)(?:[;}])/);
   assert.doesNotMatch(page, /modal-backdrop" onClick/);
   assert.match(page, /fetch\("\/api\/inspiration"/);
-  assert.match(api, /process\.env\.AIHUBMIX_API_KEY/);
-  assert.match(api, /process\.env\.AMAP_WEB_SERVICE_KEY/);
-  assert.match(api, /inspirationAIConfig\(process.env\)/);
+  assert.match(api, /workerEnv\.AIHUBMIX_API_KEY/);
+  assert.match(api, /workerEnv\.AMAP_WEB_SERVICE_KEY/);
+  assert.match(api, /inspirationAIConfig\(runtime\)/);
   assert.match(api, /parseAIPlans\(await response.json\(\)/);
   assert.match(api, /response_format/);
   assert.match(api, /const timeline = composition\.included\.length > 1/);

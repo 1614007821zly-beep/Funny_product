@@ -79,6 +79,8 @@ export async function deleteAccountData(db: D1Database, media: R2Bucket, userId:
     db.prepare("DELETE FROM feedback_entries WHERE user_id=?").bind(userId),
     db.prepare("DELETE FROM user_preferences WHERE user_id=?").bind(userId),
     db.prepare("DELETE FROM ai_usage_limits WHERE user_id=?").bind(userId),
+    db.prepare("DELETE FROM auth_sessions WHERE user_id=?").bind(userId),
+    db.prepare("DELETE FROM auth_credentials WHERE user_id=?").bind(userId),
     db.prepare("DELETE FROM relationship_members WHERE user_id=?").bind(userId),
     db.prepare("DELETE FROM users WHERE id=?").bind(userId),
   ];

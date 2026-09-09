@@ -75,14 +75,24 @@ const CIRCUIT_FAILURE_THRESHOLD = 3;
 const CIRCUIT_OPEN_MS = 5 * 60_000;
 const AI_TIMEOUT_MS = 20_000;
 const AMAP_TIMEOUT_MS = 5_000;
+const runtimeEnvironment = () => {
+  const workerEnv = env as unknown as Record<string, string | undefined>;
+  return {
+    AIHUBMIX_API_KEY: workerEnv.AIHUBMIX_API_KEY ?? process.env["AIHUBMIX_API_KEY"],
+    AMAP_WEB_SERVICE_KEY: workerEnv.AMAP_WEB_SERVICE_KEY ?? process.env["AMAP_WEB_SERVICE_KEY"],
+    AIHUBMIX_MODEL: workerEnv.AIHUBMIX_MODEL ?? process.env["AIHUBMIX_MODEL"],
+    AIHUBMIX_BASE_URL: workerEnv.AIHUBMIX_BASE_URL ?? process.env["AIHUBMIX_BASE_URL"],
+  };
+};
 
 export async function POST(request: Request) {
   const requestStartedAt = Date.now();
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录后再获取 AI 灵感。", code: "AUTH_REQUIRED" }, 401);
 
-  const aiHubMixKey = process.env.AIHUBMIX_API_KEY;
-  const amapKey = process.env.AMAP_WEB_SERVICE_KEY;
+  const runtime = runtimeEnvironment();
+  const aiHubMixKey = runtime.AIHUBMIX_API_KEY;
+  const amapKey = runtime.AMAP_WEB_SERVICE_KEY;
   if (!aiHubMixKey) {
     await recordServiceRuns([
       { service: "ai", source: "未配置", durationMs: serviceElapsed(requestStartedAt), outcome: "skipped", failureType: "unconfigured", fallbackTriggered: false },
@@ -104,7 +114,7 @@ export async function POST(request: Request) {
   if (inputError) return json({ error: inputError, code: "INVALID_INPUT" }, 400);
   const safeInput = sanitizeInput(input);
   let aiConfig: ReturnType<typeof inspirationAIConfig>;
-  try { aiConfig = inspirationAIConfig(process.env); }
+  try { aiConfig = inspirationAIConfig(runtime); }
   catch {
     await recordServiceRuns([
       { service: "ai", source: "配置无效", durationMs: serviceElapsed(requestStartedAt), outcome: "failure", failureType: "invalid_configuration", fallbackTriggered: false },
@@ -262,7 +272,7 @@ function requestFeedback(input: Required<InspirationRequest>): RecommendationFee
   return { placeIds: input.excludePlaceIds, brands: input.excludeBrands, categories: input.excludeCategories, maxDistance: input.maxDistance, maxCost: input.maxCost };
 }
 
-async function generatePlans(apiKey: string, input: Required<InspirationRequest>, weather: AmapWeatherForecast | null, candidates: AmapPlace[], config = inspirationAIConfig(process.env)): Promise<GeneratedPlan[]> {
+async function generatePlans(apiKey: string, input: Required<InspirationRequest>, weather: AmapWeatherForecast | null, candidates: AmapPlace[], config = inspirationAIConfig(runtimeEnvironment())): Promise<GeneratedPlan[]> {
   const candidateLines = candidates.slice(0, 12).map((place, index) => {
     const facts = [place.category, place.businessArea, place.distance === null ? "" : `距离${Math.round(place.distance)}米`, place.rating ? `评分${place.rating}` : "", place.cost ? `参考人均${place.cost}元` : ""].filter(Boolean).join("｜");
     return `P${index + 1}：${place.name}｜${facts}`;

@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { resolveAmapLocation } from "../../../lib/amap-location";
 import { classifyServiceFailure, recordServiceRuns, serviceElapsed } from "../../../lib/service-monitoring";
 import { getChatGPTUser } from "../../chatgpt-auth";
@@ -8,7 +9,8 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
   const identity = await getChatGPTUser();
   if (!identity) return json({ error: "请先登录后再使用定位。", code: "AUTH_REQUIRED" }, 401);
-  const apiKey = process.env.AMAP_WEB_SERVICE_KEY;
+  const workerEnv = env as unknown as Record<string, string | undefined>;
+  const apiKey = workerEnv.AMAP_WEB_SERVICE_KEY ?? process.env["AMAP_WEB_SERVICE_KEY"];
   if (!apiKey) {
     await recordServiceRuns([{ service: "location", source: "未配置", durationMs: serviceElapsed(startedAt), outcome: "skipped", failureType: "unconfigured", fallbackTriggered: false }]).catch(() => undefined);
     return json({ error: "定位服务尚未配置。", code: "LOCATION_NOT_CONFIGURED" }, 503);

@@ -95,6 +95,11 @@ export default function Home() {
   const [profileError, setProfileError] = useState("");
   const [account, setAccount] = useState<AccountSnapshot | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authDraft, setAuthDraft] = useState({ email: "", password: "" });
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [hostingSupportsChatGPT, setHostingSupportsChatGPT] = useState(false);
   const [sharedSchedule, setSharedSchedule] = useState<ScheduleRecord | null>(null);
   const [schedules, setSchedules] = useState<ScheduleRecord[]>([]);
   const [scheduleLoaded, setScheduleLoaded] = useState(false);
@@ -278,6 +283,25 @@ export default function Home() {
       if (!silent) setRelationshipError("暂时无法连接账号服务，请稍后重试。");
       return null;
     }
+  }
+  async function submitStandaloneAuth(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setAuthBusy(true); setAuthError("");
+    try {
+      const response = await fetch(`/api/auth/${authMode}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(authDraft) });
+      const data = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !data.ok) throw new Error(data.error || "账号操作暂时未完成。");
+      const snapshot = await loadAccount();
+      if (!snapshot?.authenticated) throw new Error("登录状态尚未生效，请刷新后重试。");
+      setAuthDraft({ email: "", password: "" }); notify(authMode === "register" ? "账号已创建" : "登录成功");
+    } catch (error) { setAuthError(error instanceof Error ? error.message : "账号操作暂时未完成。"); }
+    finally { setAuthBusy(false); }
+  }
+  async function logoutStandalone() {
+    setAuthBusy(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      clearAppBrowserData(); setAccount({ authenticated: false }); go("welcome", true);
+    } finally { setAuthBusy(false); }
   }
   async function createRelationshipInvite() {
     setAccountBusy(true); setRelationshipError("");
@@ -964,12 +988,14 @@ export default function Home() {
       const data = await response.json() as { ok?: boolean; error?: string };
       if (!response.ok || !data.ok) throw new Error(data.error || "账号注销暂未完成。");
       clearAppBrowserData();
-      window.location.assign("/signout-with-chatgpt?return_to=%2F");
+      if (hostingSupportsChatGPT) window.location.assign("/signout-with-chatgpt?return_to=%2F");
+      else await logoutStandalone();
     } catch (error) { setDeletionError(error instanceof Error ? error.message : "账号注销暂未完成，请稍后重试。"); }
     finally { setDeletionBusy(false); }
   }
 
   useEffect(() => {
+    setHostingSupportsChatGPT(window.location.hostname.endsWith("chatgpt.site"));
     // The remote account snapshot is authoritative and arrives asynchronously.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadAccount(true);
@@ -1213,7 +1239,7 @@ export default function Home() {
                 <div className="soft-orb orb-one"/><div className="soft-orb orb-two"/>
                 <div className="welcome-symbol"><span>♥</span><span>♥</span></div>
                 <div className="welcome-copy"><p className="kicker">恋爱日记</p><h2>两个人的生活，<br/>值得被温柔记住。</h2><p>一起计划，一起经历，<br/>也一起拥有属于我们的回忆。</p></div>
-                <div className="welcome-actions">{account?.authenticated ? hasRelationship ? <><button className="primary-button" onClick={() => go("home")}>进入我们的空间 <Arrow /></button><a className="account-link" href="/signout-with-chatgpt?return_to=%2F">退出当前账号</a></> : <><button className="primary-button" onClick={() => {setOnboardingIntent("solo");go(soloMode?"home":"age");}}>{soloMode?"继续单人体验":"先自己体验"} <Arrow /></button><button className="ghost-button welcome-join" onClick={() => {setOnboardingIntent("invite");go(soloMode?"profileSetup":"age");}}>邀请 TA 一起使用</button><button className="account-link" onClick={() => {setOnboardingIntent("join");go(soloMode?"connect":"age");}}>我有 TA 的邀请码</button><a className="account-link" href="/signout-with-chatgpt?return_to=%2F">退出当前账号</a></> : <><a className="primary-button sign-in-button" href="/signin-with-chatgpt?return_to=%2F">使用 ChatGPT 登录 <Arrow /></a><p>登录后可先单人体验，以后再邀请 TA</p></>}</div>
+                <div className="welcome-actions">{account?.authenticated ? hasRelationship ? <><button className="primary-button" onClick={() => go("home")}>进入我们的空间 <Arrow /></button>{hostingSupportsChatGPT?<a className="account-link" href="/signout-with-chatgpt?return_to=%2F">退出当前账号</a>:<button className="account-link" disabled={authBusy} onClick={()=>void logoutStandalone()}>退出当前账号</button>}</> : <><button className="primary-button" onClick={() => {setOnboardingIntent("solo");go(soloMode?"home":"age");}}>{soloMode?"继续单人体验":"先自己体验"} <Arrow /></button><button className="ghost-button welcome-join" onClick={() => {setOnboardingIntent("invite");go(soloMode?"profileSetup":"age");}}>邀请 TA 一起使用</button><button className="account-link" onClick={() => {setOnboardingIntent("join");go(soloMode?"connect":"age");}}>我有 TA 的邀请码</button>{hostingSupportsChatGPT?<a className="account-link" href="/signout-with-chatgpt?return_to=%2F">退出当前账号</a>:<button className="account-link" disabled={authBusy} onClick={()=>void logoutStandalone()}>退出当前账号</button>}</> : <><form className="standalone-auth" onSubmit={submitStandaloneAuth}><div className="auth-mode" role="group" aria-label="账号方式"><button type="button" aria-pressed={authMode==="login"} onClick={()=>{setAuthMode("login");setAuthError("");}}>登录</button><button type="button" aria-pressed={authMode==="register"} onClick={()=>{setAuthMode("register");setAuthError("");}}>注册</button></div><label>邮箱<input type="email" autoComplete="email" required maxLength={254} value={authDraft.email} onChange={event=>setAuthDraft({...authDraft,email:event.target.value})}/></label><label>密码<input type="password" autoComplete={authMode==="login"?"current-password":"new-password"} required minLength={10} maxLength={128} value={authDraft.password} onChange={event=>setAuthDraft({...authDraft,password:event.target.value})}/></label>{authError&&<p className="field-error" role="alert">{authError}</p>}<button className="primary-button" disabled={authBusy}>{authBusy?"请稍候…":authMode==="login"?"登录并继续":"创建账号"} <Arrow /></button></form>{hostingSupportsChatGPT&&<a className="account-link" href="/signin-with-chatgpt?return_to=%2F">使用 ChatGPT 登录</a>}<p>登录后可先单人体验，以后再邀请 TA</p></>}</div>
               </div>
             )}
 
