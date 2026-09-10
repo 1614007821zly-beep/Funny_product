@@ -1,100 +1,156 @@
-# vinext-starter
+# 恋爱日记
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+一款面向情侣共同生活的轻量应用：从当下状态出发寻找约会灵感，把建议变成双方确认的安排，并在完成后自然沉淀为共同回忆。
 
-## Prerequisites
+[在线体验](https://love-diary-v1-prototype.linyu518.chatgpt.site/) · [反馈问题](https://github.com/1614007821zly-beep/Funny_product/issues)
+
+![恋爱日记产品预览](public/og.png)
+
+> 当前版本：V59。项目仍处于公开测试阶段，请勿在测试环境中保存敏感个人信息。
+
+## 产品理念
+
+恋爱日记不是传统的日记工具，也不是简单的活动列表。它围绕一条完整的共同生活链路设计：
+
+```text
+建立关系 → 了解彼此状态 → 生成灵感 → 双方确认安排
+       → 共同日历 → 完成确认 → 形成回忆
+```
+
+设计遵循“现代极简 + 轻情侣温度”：功能页面优先保证信息清晰，关键内容使用低饱和红豆色和轻量卡片承载，AI 只提供建议，不会未经确认写入正式生活记录。
+
+## 已实现功能
+
+### 账号与关系
+
+- 邮箱注册、登录、安全退出与账号注销
+- 单人体验，不强制先绑定伴侣
+- 邀请码建立真实双人关系
+- 关系退出、重新绑定和历史内容共享选择
+- 双方分别维护自己的昵称、生日和城市资料
+
+### AI 灵感
+
+- 按双方状态、氛围、时间、预算、活动空间和特殊照顾生成建议
+- 支持自定义状态与特殊需求
+- 基于用户位置、商圈和搜索半径获取真实地点
+- 高德地点、天气与 AI 组合推荐
+- 严格校验预算、距离、活动类型和地点真实性
+- 主方案、备选方案和扩展候选池
+- “合适 / 不合适”反馈闭环，并支持太远、太贵、不新奇等原因
+- 上游服务不可用时提供明确提示、重试入口和安全降级方案
+
+### 共同生活
+
+- 个人安排与双人同步安排
+- 伴侣接受、完成确认、取消和删除流程
+- 共同日历、今日跳转、节日、休息日和调休标注
+- 重要日子与情侣任务
+- 安排完成后生成回忆，可添加文字和照片
+- 回忆内容分别管理，可撤回自己的照片和文字贡献
+- 有时效的只读分享链接及撤回控制
+
+### 数据与隐私
+
+- 用户数据导出与安全账号注销
+- 密码仅保存经过 `scrypt` 处理的哈希，不保存明文
+- API 密钥只保存在服务端
+- 图片撤回后同时删除对象存储文件
+- 推荐运行监测不记录聊天隐私、精确位置或密钥
+
+## 技术架构
+
+| 层级 | 技术与服务 |
+|---|---|
+| 前端 | React 19、TypeScript、App Router |
+| 构建与运行 | vinext、Vite、Cloudflare Workers |
+| 数据库 | Cloudflare D1、Drizzle ORM |
+| 图片存储 | Cloudflare R2 |
+| AI | AIHubMix 兼容接口 |
+| 地点与天气 | 高德 Web 服务；天气支持 Open-Meteo 降级 |
+| 测试 | Node Test Runner、TypeScript、生产构建验证 |
+
+结构化数据保存在 D1，照片保存在 R2。GitHub 只保存源代码和数据库结构，不保存用户账号、照片或生产密钥。
+
+## 本地运行
+
+### 环境要求
 
 - Node.js `>=22.13.0`
+- npm
 
-## Quick Start
+### 启动项目
 
 ```bash
+git clone https://github.com/1614007821zly-beep/Funny_product.git
+cd Funny_product
 npm install
+cp .env.example .env.local
 npm run dev
-npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+打开终端输出的本地地址即可预览。没有配置外部 API 时，账号和基础页面仍可开发，但真实地点、天气与 AI 灵感功能不可用或会进入降级状态。
 
-## Included Shape
+### 服务端环境变量
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```dotenv
+AIHUBMIX_API_KEY=
+AIHUBMIX_MODEL=ox-alpha
+AIHUBMIX_BASE_URL=https://aihubmix.com/v1
+AMAP_WEB_SERVICE_KEY=
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+不要使用 `NEXT_PUBLIC_` 暴露密钥，也不要提交 `.env.local`。仓库已忽略所有本地 `.env*` 文件，仅保留不含密钥的 `.env.example`。
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+## 质量检查
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+```bash
+npm run typecheck
+npm run lint
+npm test
+```
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+`npm test` 会依次执行类型检查、生产构建和完整自动测试。目前测试覆盖账号注销、关系数据边界、双人安排、回忆撤回、天气降级、真实地点筛选、预算与距离约束、反馈排序及异常恢复等关键流程。
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+## 目录结构
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+```text
+app/        页面与 API 路由
+db/         Drizzle 数据结构
+drizzle/    D1 数据库迁移
+lib/        推荐、认证、日期和业务规则
+public/     图标与公开图片
+tests/      自动测试
+worker/     Cloudflare Worker 入口
+```
 
-## Useful Commands
+## 部署说明
 
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+项目支持 Cloudflare Workers + D1 + R2，也保留现有 Sites 配置作为回退环境。生产部署需要：
 
-## Learn More
+1. 创建 D1 数据库与 R2 存储桶；
+2. 执行 `drizzle/` 中尚未应用的迁移；
+3. 在托管平台设置服务端密钥；
+4. 完成构建和发布；
+5. 使用一次性测试账号验证登录、关系绑定、地点、天气、AI、照片和注销流程。
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+数据库名称、资源 ID、生产密钥和临时访问凭证不应写入公开文档。
+
+## 当前限制
+
+- 尚未接入邮箱验证和找回密码。
+- 正式开放注册前仍需增加登录频率限制与滥用防护。
+- `workers.dev` 在部分中国大陆网络可能无法稳定访问，正式发布应绑定自有域名并完成多网络验证。
+- 地点营业状态与价格来自第三方数据，出发前仍需用户确认。
+
+## 下一步
+
+- 自有域名与大陆网络可用性验证
+- 邮箱验证、找回密码和登录保护
+- 自动化端到端测试与运行告警
+- 旧测试环境数据迁移策略
+- 更完整的无障碍和多设备体验验证
+
+## 许可证
+
+本仓库目前未声明开源许可证。未经许可，不代表可以复制、修改或用于商业发布。
